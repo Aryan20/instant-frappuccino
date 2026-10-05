@@ -1,10 +1,11 @@
 # Instant Frappuccino
 
 A native desktop app for **Frappe Manager** (`fm`) and **Frappe Deployer** (`fmd`) — Frappe
-Cloud's workflow, on your own machine. The goal: **never open Docker Desktop or a terminal**
-for day-to-day Frappe work. Instant Frappuccino drives the Docker engine headlessly, keeps the global
-proxy and database up, restarts exactly the part of a bench you need, and fixes the usual
-"site won't load" problems in one click.
+Cloud's workflow, on your own machine and on your servers. The goal: **never open Docker
+Desktop or a terminal** for day-to-day Frappe work. Instant Frappuccino drives the Docker engine
+headlessly, keeps the global proxy and database up, restarts exactly the part of a bench you
+need, and fixes the usual "site won't load" problems in one click. Staging and production
+benches are managed from the same window over SSH.
 
 Built with **Python + Qt (PySide6)**: a native app for macOS and Linux from one codebase,
 with no web view. It uses one consistent, Frappe-UI-like design in light and dark mode.
@@ -35,6 +36,8 @@ with no web view. It uses one consistent, Frappe-UI-like design in light and dar
 - **Docker** (Docker Desktop, OrbStack, Colima, or Docker Engine on Linux)
 - **Frappe Manager** — `uv tool install frappe-manager` (or from the app's Settings)
 - **Frappe Deployer** (optional) — `uv tool install frappe-deployer --python 3.13` (or from Settings)
+- **Servers** (optional) — SSH key or ssh-agent login, and `fm` plus `python3` on the server
+  (`fmd` too for Deployer sites)
 - To run from source: [uv](https://docs.astral.sh/uv/) — it installs Python 3.13 and Qt for you
 
 ## Run from source
@@ -162,6 +165,10 @@ prints what the app finds (tools, PATH, sites) and what the actions do, with ses
 
 Add `--diagnose-actions <site>` instead to really perform Log in as Admin and open a terminal
 for that site.
+
+If a server shows "Couldn't reach…", check that `ssh <destination>` works in a terminal without
+a password prompt (the app uses `BatchMode`, so it can't answer one). A new server's host key
+must be accepted once; the Sites page's **Connect in Terminal** button opens that session.
 
 ## Roadmap ideas
 
