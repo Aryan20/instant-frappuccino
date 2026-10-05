@@ -266,20 +266,20 @@ def _is_dark(app: QApplication) -> bool:
     return app.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
+_scheme_hooked = False
+
+
 def apply(app: QApplication, theme: str = "system") -> None:
-    global current
+    global _scheme_hooked
     if sys.platform.startswith("linux"):
         # Fusion renders consistently across GNOME/KDE/xfce; our stylesheet does the rest.
         app.setStyle("Fusion")
     hints = QGuiApplication.styleHints()
-    if hasattr(hints, "setColorScheme"):  # Qt >= 6.8
-        scheme = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark}.get(
-            theme, Qt.ColorScheme.Unknown
-        )
-        hints.setColorScheme(scheme)
-        if not getattr(app, "_fm_scheme_hooked", False):
-            hints.colorSchemeChanged.connect(lambda _s: _restyle(app))
-            app._fm_scheme_hooked = True  # type: ignore[attr-defined]
+    scheme = {"light": Qt.ColorScheme.Light, "dark": Qt.ColorScheme.Dark}.get(theme, Qt.ColorScheme.Unknown)
+    hints.setColorScheme(scheme)
+    if not _scheme_hooked:  # re-style when the OS switches light/dark
+        hints.colorSchemeChanged.connect(lambda _s: _restyle(app))
+        _scheme_hooked = True
     font = app.font()
     if sys.platform == "darwin":
         font.setPointSize(13)

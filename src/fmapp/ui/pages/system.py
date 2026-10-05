@@ -122,6 +122,7 @@ class SystemPage(QWidget):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__()
         self.ctx = ctx
+        self._disk_shown: list[cmod.DiskRow] = []
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         _scroll, body = scroll_page(outer)
@@ -317,7 +318,7 @@ class SystemPage(QWidget):
         running = sum(c.running for c in sysstore.containers)
         self.count.setText(f"{running} running · {len(sysstore.containers)} total")
 
-        if sysstore.disk and sysstore.disk != getattr(self, "_disk_shown", None):
+        if sysstore.disk and sysstore.disk != self._disk_shown:
             self._disk_shown = sysstore.disk
             while self.disk_row.count():
                 widget = self.disk_row.takeAt(0).widget()

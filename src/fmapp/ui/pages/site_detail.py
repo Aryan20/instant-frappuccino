@@ -72,6 +72,7 @@ class SiteDetailPage(QWidget):
         super().__init__()
         self.ctx = ctx
         self.name = ""
+        self._stale = True  # benches changed while hidden; re-render on show
         box = QVBoxLayout(self)
         box.setContentsMargins(*theme.PAGE_MARGINS)
         box.setSpacing(0)
@@ -955,7 +956,7 @@ class SiteDetailPage(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if getattr(self, "_stale", True):
+        if self._stale:
             self.render()
             self._render_containers()
 

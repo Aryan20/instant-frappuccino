@@ -8,14 +8,11 @@ platformdirs (``~/Library/Application Support`` on macOS, XDG dirs on Linux).
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 from platformdirs import user_cache_path, user_config_path
 
 from fmapp import APP_ID
-
-LEGACY_APP_ID = "fm-app"  # the app's name before it became Instant Frappuccino
 
 
 def fm_home() -> Path:
@@ -29,19 +26,8 @@ def benches_dir() -> Path:
 
 def config_dir() -> Path:
     path = user_config_path(APP_ID, appauthor=False)
-    if not path.exists():
-        migrate_legacy(user_config_path(LEGACY_APP_ID, appauthor=False), path)
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def migrate_legacy(old: Path, new: Path) -> bool:
-    """Carry settings, My Apps and deploy configs over from the old app id (once)."""
-    if new.exists() or not old.is_dir():
-        return False
-    new.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(old), str(new))
-    return True
 
 
 def cache_dir() -> Path:

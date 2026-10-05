@@ -14,8 +14,6 @@ from pathlib import Path
 from fmapp import APP_ID, APP_NAME
 
 LABEL = "com.rtcamp.instant-frappuccino"
-LEGACY_LABEL = "com.rtcamp.fm-app"
-LEGACY_APP_ID = "fm-app"
 BACKGROUND_FLAG = "--background"
 
 
@@ -70,15 +68,8 @@ def disable() -> None:
     item_path().unlink(missing_ok=True)
 
 
-def _legacy_item() -> Path:
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_LABEL}.plist"
-    return Path.home() / ".config" / "autostart" / f"{LEGACY_APP_ID}.desktop"
-
-
 def sync(mode: str) -> None:
     """Make the login item match the ``autostart`` setting (off | launch | login)."""
-    _legacy_item().unlink(missing_ok=True)  # pre-rename login item would launch a stale command
     if mode == "login":
         enable()
     elif is_enabled():

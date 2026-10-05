@@ -280,8 +280,7 @@ class NewSiteDialog(QDialog):
         self.fmd_card.set_selected(kind is BenchKind.DEPLOYER)
         self.fm_opts.setVisible(kind is BenchKind.FM)
         self.fmd_opts.setVisible(kind is BenchKind.DEPLOYER)
-        if hasattr(self, "import_bar"):
-            self.import_bar.setVisible(kind is BenchKind.DEPLOYER)
+        self.import_bar.setVisible(kind is BenchKind.DEPLOYER)
 
     def spec(self) -> SiteSpec:
         return SiteSpec(

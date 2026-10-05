@@ -167,24 +167,6 @@ def test_login_item_roundtrip(tmp_path, monkeypatch):
     assert not autostart.is_enabled()
 
 
-def test_legacy_config_is_migrated(tmp_path):
-    old, new = tmp_path / "fm-app", tmp_path / "instant-frappuccino"
-    (old / "deployer").mkdir(parents=True)
-    (old / "settings.json").write_text("{}")
-    assert paths.migrate_legacy(old, new)
-    assert (new / "settings.json").exists() and (new / "deployer").is_dir() and not old.exists()
-    assert not paths.migrate_legacy(old, new)  # idempotent
-
-
-def test_sync_removes_legacy_login_item(tmp_path, monkeypatch):
-    monkeypatch.setattr(autostart.Path, "home", lambda: tmp_path)
-    legacy = autostart._legacy_item()
-    legacy.parent.mkdir(parents=True)
-    legacy.write_text("old")
-    autostart.sync("off")
-    assert not legacy.exists()
-
-
 def test_engine_provider_never_contacts_the_daemon(monkeypatch):
     calls = []
     monkeypatch.setattr(

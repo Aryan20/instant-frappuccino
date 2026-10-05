@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +47,9 @@ class MainWindow(QMainWindow):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__()
         self.ctx = ctx
+        self.tray: QSystemTrayIcon | None = None  # set by app.py when a tray is available
+        self._quitting = False
+        self._told_about_tray = False
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(QSize(1000, 640))
         self.resize(1240, 800)
@@ -234,24 +238,19 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        tray = getattr(self, "tray", None)
-        if (
-            not getattr(self, "_quitting", False)
-            and tray
-            and tray.isVisible()
-            and self.ctx.settings.close_to_tray
-        ):
+        tray = self.tray
+        if not self._quitting and tray and tray.isVisible() and self.ctx.settings.close_to_tray:
             # Keep running in the menu bar / tray; sites and jobs stay under our control.
             event.ignore()
             self.hide()
-            if not getattr(self, "_told", False):
-                self._told = True
+            if not self._told_about_tray:
+                self._told_about_tray = True
                 tray.showMessage(
                     f"{APP_NAME} is still running",
                     "Sites keep running. Use the menu-bar icon to reopen or quit.",
                 )
             return
-        if not getattr(self, "_quitting", False):
+        if not self._quitting:
             event.ignore()
             self.request_quit()
             return
