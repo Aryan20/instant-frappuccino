@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Instant Frappuccino
+GenericName=Frappe Site Manager
+Comment=Create and manage Frappe Manager and Frappe Deployer sites locally
+Exec=instant-frappuccino
+Icon=instant-frappuccino
+Terminal=false
+Categories=Development;
+Keywords=frappe;erpnext;bench;docker;
+StartupWMClass=instant-frappuccino

@@ -1,0 +1,41 @@
+site_name = "shop.localhost"
+bench_name = ""
+github_token = "ghp_literal_in_file"
+verbose = true
+
+[[apps]]
+repo = "frappe/frappe"
+ref = "version-15"
+
+[[apps]]
+repo = "https://github.com/frappe/erpnext"
+ref = "version-15"
+after_bench_build = "echo built"
+
+[[apps]]
+repo = "acme/mono"
+ref = "main"
+subdir_path = "apps/shop"
+symlink = false
+
+[release]
+releases_retain_limit = 9
+python_version = "3.11"
+use_fc_deps = true
+
+[switch]
+maintenance_mode = false
+backups = true
+rollback = false
+migrate_timeout = 900
+
+[switch.site_config]
+host_name = "https://shop.example.com"
+
+[ship]
+host = "10.0.0.5"
+ssh_user = "frappe"
+
+[fc]
+api_key = "fc_key_123"
+api_secret = "fc_secret_456"
