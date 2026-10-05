@@ -60,11 +60,10 @@ class MyAppsPage(QWidget):
     def _render(self) -> None:
         self.tree.clear()
         for app in self.ctx.catalog.apps:
-            lock = "🔒 " if app.private else ""
             source = " (marketplace)" if app.marketplace_name else ""
             item = QTreeWidgetItem(
                 [
-                    f"{lock}{app.title}{source}",
+                    f"{app.title}{source}",
                     app.repo + (f"#{app.subdir}" if app.subdir else ""),
                     app.ref or "default",
                     app.description,

@@ -18,7 +18,6 @@ class CatalogApp:
     ref: str = ""
     subdir: str = ""
     description: str = ""
-    private: bool = False
     marketplace_name: str = ""  # set when saved from the marketplace
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 

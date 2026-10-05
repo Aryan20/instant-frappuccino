@@ -25,8 +25,8 @@ def test_discover_deployer_bench_and_releases():
     assert bench.kind is BenchKind.DEPLOYER
     assert bench.status is BenchStatus.STOPPED
     assert [r.name for r in bench.releases] == ["release_20260101_120000", "release_20251201_090000"]
-    assert bench.active_release and bench.active_release.name == "release_20260101_120000"
-    assert bench.active_release.created and bench.active_release.created.year == 2026
+    [active] = [r for r in bench.releases if r.active]
+    assert active.name == "release_20260101_120000" and active.created.year == 2026
     assert {a.name for a in bench.apps} == {"frappe", "erpnext"}
 
 

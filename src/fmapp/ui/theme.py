@@ -29,7 +29,6 @@ SIDEBAR_WIDTH = 232
 
 @dataclass(frozen=True)
 class Palette:
-    dark: bool
     canvas: str  # page background
     sidebar: str
     surface: str  # cards, tables, inputs
@@ -49,7 +48,6 @@ class Palette:
 
 
 LIGHT = Palette(
-    dark=False,
     canvas="#ffffff",
     sidebar="#f8f8f8",
     surface="#ffffff",
@@ -68,7 +66,6 @@ LIGHT = Palette(
     log_fg="#e5e7eb",
 )
 DARK = Palette(
-    dark=True,
     canvas="#171717",
     sidebar="#1e1e1e",
     surface="#1f1f1f",
@@ -99,8 +96,6 @@ STATUS_COLORS = {
     "cancelled": ("#737373", "rgba(115,115,115,0.14)"),
     "fm": ("#2563eb", "rgba(37,99,235,0.12)"),
     "deployer": ("#7c3aed", "rgba(124,58,237,0.12)"),
-    "dev": ("#0891b2", "rgba(8,145,178,0.12)"),
-    "prod": ("#be123c", "rgba(190,18,60,0.11)"),
 }
 
 current: Palette = LIGHT
@@ -183,8 +178,6 @@ QPushButton[kind="danger"]:hover {{ background: #b91c1c; }}
 QPushButton[kind="danger"]:disabled {{ background: rgba(220,38,38,0.35); }}
 QPushButton[kind="ghost"] {{ background: transparent; border: none; color: {p.muted}; padding: 0 6px; }}
 QPushButton[kind="ghost"]:hover {{ color: {p.text}; background: {p.subtle}; }}
-QPushButton[kind="small"] {{ min-height: 24px; max-height: 24px; padding: 0 10px; font-size: 12px;
-    border-radius: 6px; }}
 
 /* inputs */
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {{

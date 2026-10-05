@@ -141,7 +141,7 @@ def read_releases(workspace: Path) -> list[Release]:
     link = workspace / "frappe-bench"
     active = link.resolve().name if link.is_symlink() else None
     releases = [
-        Release(name=d.name, path=d, active=d.name == active)
+        Release(name=d.name, active=d.name == active)
         for d in workspace.iterdir()
         if d.is_dir() and _RELEASE_DIR.match(d.name)
     ]

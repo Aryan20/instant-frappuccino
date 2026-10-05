@@ -131,7 +131,6 @@ class InstalledApp:
 @dataclass
 class Release:
     name: str
-    path: Path
     active: bool = False
 
     @property
@@ -221,10 +220,6 @@ class Bench:
     @property
     def frappe_version(self) -> str:
         return next((a.version for a in self.apps if a.name == "frappe"), "")
-
-    @property
-    def active_release(self) -> Release | None:
-        return next((r for r in self.releases if r.active), None)
 
 
 @dataclass

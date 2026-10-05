@@ -132,7 +132,7 @@ def render_background(target: Path, scale: int, app_name: str, version: str) -> 
     painter.drawText(
         QRectF(0, HEIGHT - 32, WIDTH, 18),
         Qt.AlignmentFlag.AlignHCenter,
-        f"Version {version}  ·  Not signed yet: right-click › Open on first launch",
+        f"Version {version}  ·  Not signed yet: allow it once in System Settings › Privacy & Security",
     )
     painter.end()
     image.save(str(target))

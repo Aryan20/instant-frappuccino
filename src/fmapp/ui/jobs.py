@@ -88,10 +88,7 @@ class JobRun(QObject):
         self.state = RunState.QUEUED
         self.step_index = -1
         self.log: list[str] = []
-        self.error = ""
         self.created = time.time()
-        self.started: float | None = None
-        self.ended: float | None = None
         self._process: QProcess | None = None
         self._output: _Output | None = None
         self._cancel_requested = False
@@ -111,7 +108,6 @@ class JobRun(QObject):
 
     def start(self) -> None:
         self.state = RunState.RUNNING
-        self.started = time.time()
         self.changed.emit()
         self._next_step()
 
@@ -135,8 +131,7 @@ class JobRun(QObject):
         self.output.emit(text)
 
     def _finish(self, state: RunState, error: str = "") -> None:
-        self.state, self.error = state, error
-        self.ended = time.time()
+        self.state = state
         if error:
             self._emit(f"\n✖  {error}\n")
         elif state is RunState.SUCCEEDED:

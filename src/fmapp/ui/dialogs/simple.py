@@ -78,15 +78,12 @@ class CatalogAppDialog(QDialog):
         ref_row.addWidget(self.ref, 1)
         ref_row.addWidget(fetch)
         self.subdir = QLineEdit(self.app.subdir, placeholderText="only for monorepos")
-        self.private = QCheckBox("Private repository (uses your GitHub token)")
-        self.private.setChecked(self.app.private)
         self.description = QPlainTextEdit(self.app.description)
         self.description.setFixedHeight(70)
         form.addRow("Title", self.title)
         form.addRow("Repository", self.repo)
         form.addRow("Branch", ref_row)
         form.addRow("Subdirectory", self.subdir)
-        form.addRow("", self.private)
         form.addRow("Notes", self.description)
         self.error = label("", wrap=True)
         self.error.setProperty("role", "error")
@@ -129,7 +126,6 @@ class CatalogAppDialog(QDialog):
         self.app.repo = parsed.repo
         self.app.ref = self.ref.currentText().strip() or parsed.ref
         self.app.subdir = self.subdir.text().strip() or parsed.subdir
-        self.app.private = self.private.isChecked()
         self.app.description = self.description.toPlainText().strip()
         self.ctx.catalog.upsert(self.app)
         self.accept()

@@ -10,7 +10,6 @@ from pathlib import Path
 from fmapp.core import paths
 
 FRAPPE_BRANCHES = ("version-15", "version-16", "develop")
-AUTOSTART_MODES = ("off", "launch", "login")
 
 
 @dataclass

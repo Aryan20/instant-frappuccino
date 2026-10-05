@@ -6,8 +6,8 @@ for day-to-day Frappe work. Instant Frappuccino drives the Docker engine headles
 proxy and database up, restarts exactly the part of a bench you need, and fixes the usual
 "site won't load" problems in one click.
 
-Built with **Python + Qt (PySide6)**: real native widgets on macOS (Aqua) and Linux
-(Fusion / your desktop's Qt style), one codebase, no web view.
+Built with **Python + Qt (PySide6)**: a native app for macOS and Linux from one codebase,
+with no web view. It uses one consistent, Frappe-UI-like design in light and dark mode.
 
 ## Features
 
@@ -56,8 +56,12 @@ uv run python packaging/build.py
 - **Linux** → `dist/instant-frappuccino/` and `dist/instant-frappuccino-<ver>-linux-<arch>.tar.gz` (extract, run `./install.sh` to add it to your app menu)
 
 PyInstaller doesn't cross-compile, so build on each OS. [`ci.yml`](.github/workflows/ci.yml)
-tests on both and uploads both bundles. The bundles are unsigned: on macOS, right-click →
-Open the first time, or sign and notarize with your Developer ID.
+tests on both and uploads both bundles. The macOS build targets Apple Silicon on macOS 13 or
+later; the build fails if any bundled library needs a newer macOS.
+
+The bundles are unsigned, so macOS blocks the first launch. On macOS 15 or 26, use
+**System Settings → Privacy & Security → Open Anyway**; on macOS 13 or 14, right-click the app
+and choose **Open**. Signing and notarizing with a Developer ID removes the prompt.
 
 Linux needs Qt's xcb runtime libraries, which most desktops already have
 (`sudo apt install libxcb-cursor0` on Debian/Ubuntu if the app won't start).
@@ -67,33 +71,44 @@ Linux needs Qt's xcb runtime libraries, which most desktops already have
 ```
 src/fmapp/
   core/            ← no Qt imports; unit-tested; shareable with a CLI or another UI
-    models.py        AppRef (repo[:ref][#subdir] ↔ fm / fmd syntax), Bench, Release, SiteSpec
-    engine.py        detects Docker Desktop / OrbStack / Colima / systemd / rootless and
-                     builds their start/stop/restart commands + a readiness wait
-    containers.py    FM containers (global + per bench), stats, port conflicts, disk usage
-    info.py          parses `fm info` into rows, flagging secrets
-    autostart.py     login item: LaunchAgent (macOS) / XDG autostart (Linux)
-    benches.py       reads ~/frappe/sites/*/bench_config.toml, apps/.git, release_* dirs,
-                     and `docker compose ls` — no scraping of fm's Rich tables
+    models.py        AppRef (repo[:ref][#subdir] ↔ fm / fmd syntax), Bench, Release, Backup, SiteSpec
+    benches.py       reads ~/frappe/sites/*/bench_config.toml, apps/.git, release_* dirs, backups,
+                     and `docker compose ls`, with no scraping of fm's Rich tables
     operations.py    intent → Job(steps) of fm/fmd argv; pure data, previewable, testable
-    deployer.py      per-site fmd config (desired state, like a Frappe Cloud bench group)
-    marketplace.py   Frappe Cloud marketplace index + page details + repo resolution
+    deployer.py      per-site fmd config: build, import and merge site.toml files
+    engine.py        detects Docker Desktop / OrbStack / Colima / systemd / rootless and
+                     builds their start/stop/restart commands, plus a readiness wait
+    containers.py    FM containers (global and per bench), stats, port conflicts, disk usage
+    marketplace.py   Frappe Cloud marketplace index, page details, repo and branch lookup
+    info.py          parses `fm info` into rows, flagging secrets
+    terminal.py      opens a command in the user's terminal app (.command file / Linux terminals)
+    autostart.py     login item: LaunchAgent (macOS) / XDG autostart (Linux)
     catalog.py       "My Apps" library          settings.py   user preferences
-    env.py           PATH/tool discovery for GUI launches on macOS & Linux
-    paths.py         FM home + per-OS config/cache dirs (platformdirs)
+    env.py           PATH/tool discovery for GUI launches on macOS and Linux
+    paths.py         FM home, per-OS config/cache dirs, owner-only file writes
+    textutil.py      ANSI cleanup, secret masking, app-name helpers
   ui/              ← PySide6
-    context.py       shared stores (benches, tools, marketplace) + job submission
-    jobs.py          QProcess job runner (streaming, cancel, per-bench serialization)
+    app.py           single instance, --background mode, auto-start
+    main_window.py   sidebar navigation and page stack
+    context.py       shared stores (benches, tools, system, marketplace) and job submission
+    jobs.py          QProcess job runner (streaming, masking, cancel, per-bench serialization)
+    site_tools.py    Log in as Admin, terminal/console, run command, password, clear cache
     tray.py          menu-bar / tray quick actions
-    app.py           single instance (QLocalServer), --background mode, auto-start
+    theme.py         spacing scale, light/dark palettes, the stylesheet
+    widgets.py       shared widgets and layout helpers
     pages/           sites, site_detail, system, marketplace, my_apps, activity, settings
-    dialogs/         new_site wizard, app_selector, add apps, edit app, confirm delete
+    dialogs/         new_site, app_selector, build, logs, add apps / edit app / confirm
+  diagnose.py      --diagnose / --diagnose-actions self-checks inside the packaged app
+packaging/
+  build.py         PyInstaller bundle, minimum-macOS check, DMG or Linux tarball
+  dmg_art.py       installer window artwork and Finder layout (via dmgbuild)
 ```
 
 **Portability.** Everything OS-specific lives in `core/env.py` (extra PATH entries for
 Homebrew, `~/.local/bin`, Docker Desktop, OrbStack, snap…) and `core/paths.py` (config in
 `~/Library/Application Support/instant-frappuccino` on macOS, `~/.config/instant-frappuccino` on Linux). The UI styles
-only its own surfaces, using palette roles, so it follows each platform's look and dark mode.
+everything through one stylesheet in `ui/theme.py`, re-applied when the OS switches between
+light and dark.
 
 **Which tool runs what.**
 
@@ -123,11 +138,23 @@ uv run pytest -q
 uv run ruff check src tests packaging
 ```
 
+## Troubleshooting
+
+If a button seems to do nothing, run the packaged app from a terminal with a self-check. It
+prints what the app finds (tools, PATH, sites) and what the actions do, with session ids redacted:
+
+```bash
+"/Applications/Instant Frappuccino.app/Contents/MacOS/Instant Frappuccino" --diagnose
+```
+
+Add `--diagnose-actions <site>` instead to really perform Log in as Admin and open a terminal
+for that site.
+
 ## Roadmap ideas
 
 - Frappe Cloud import: fmd already supports `--fc-key/--fc-secret/--fc-site` to pull an FC
   site's apps and DB into a local release
 - Ship mode: build locally, deploy to a remote server (`fmd deploy ship`)
-- SSL / alias-domain management (`fm ssl`), ngrok tunnels, global services panel
+- SSL / alias-domain management (`fm ssl`), ngrok tunnels
 - Desktop notifications when long jobs finish
 - AppImage / Flatpak for Linux; signed + notarized macOS build
