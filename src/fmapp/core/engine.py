@@ -133,17 +133,6 @@ def provider(docker_path: str = "", override: str = "auto") -> Provider:
     return _pick(override, *current_context(docker)) if docker else Provider.UNKNOWN
 
 
-def detect(docker_path: str = "", override: str = "auto") -> EngineInfo:
-    docker = which("docker", docker_path)
-    if not docker:
-        return EngineInfo(Provider.UNKNOWN, False)
-    context, endpoint = current_context(docker)
-    provider = _pick(override, context, endpoint)
-    code, version = _out([docker, "info", "--format", "{{.ServerVersion}}"], timeout=12)
-    running = code == 0 and bool(version)
-    return EngineInfo(provider, running, version if running else "", context)
-
-
 def control_argv(provider: Provider, action: str, docker: str) -> list[list[str]]:
     """Commands that perform ``action`` (start | stop | restart) for a provider."""
     if action not in ("start", "stop", "restart"):

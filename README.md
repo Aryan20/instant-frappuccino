@@ -27,6 +27,7 @@ with no web view. It uses one consistent, Frappe-UI-like design in light and dar
 | **App workflow** | Multi-select apps: **Pull latest** (`git pull --ff-only`, then optional migrate and build of just those apps), **Run tests** (whole app or one module, enabling `allow_tests`), **Build selected**. |
 | **Releases** (Deployer) | Release history with the active one marked, *Deploy now*, *Switch to selected* (rollback), cleanup. Any FM site can be converted with **Enable release deploys**. |
 | **Activity** | Every job with step progress and full streamed output; cancel, re-run, copy log. Jobs on the same bench are serialized, different benches run in parallel. |
+| **Servers (SSH)** | Manage benches on staging or production servers as well. Add a server (an SSH alias or `user@host`, port, FM home) in **Settings → Servers**, then pick it from the switcher at the top of the sidebar. Sites, site detail, global services, containers, logs, backups/restore, deploys and releases, Log in as Admin, Terminal and Console all work on the server. The server needs `fm` (plus `fmd` for Deployer sites) and `python3`. Login uses your SSH keys or ssh-agent with connection reuse; passwords are not supported. A server marked **Production** shows the exact commands and asks before every change. Your GitHub token is never sent to servers, and a server's Docker engine, VS Code and disk cleanup stay on the server. |
 | **Settings** | Tool health (Docker, fm, fmd, uv, git) with one-click install/update of fm and fmd via `uv`, GitHub token, defaults, paths, light/dark theme. |
 
 ## Requirements
@@ -72,8 +73,13 @@ Linux needs Qt's xcb runtime libraries, which most desktops already have
 src/fmapp/
   core/            ← no Qt imports; unit-tested; shareable with a CLI or another UI
     models.py        AppRef (repo[:ref][#subdir] ↔ fm / fmd syntax), Bench, Release, Backup, SiteSpec
-    benches.py       reads ~/frappe/sites/*/bench_config.toml, apps/.git, release_* dirs, backups,
-                     and `docker compose ls`, with no scraping of fm's Rich tables
+    probe.py         reads ~/frappe/sites/*/bench_config.toml, apps/.git, release_* dirs, backups
+                     and `docker compose ls/ps`, with no scraping of fm's Rich tables. Stdlib-only,
+                     Python 3.8+: runs in-process here and as `python3 -` on servers
+    source.py        a host's benches and Docker state (local in-process, servers via SSH)
+    hosts.py         this computer plus the SSH servers from Settings
+    remote.py        wraps argv for a server: `ssh … host -- bash -lc '…'`, runs the probe
+    benches.py       probe output → Bench models
     operations.py    intent → Job(steps) of fm/fmd argv; pure data, previewable, testable
     deployer.py      per-site fmd config: build, import and merge site.toml files
     engine.py        detects Docker Desktop / OrbStack / Colima / systemd / rootless and
@@ -117,6 +123,13 @@ light and dark.
 - *Frappe Deployer sites:* `fm create -e prod` (frappe only), then the app writes
   `<config>/deployer/<site>.toml` and runs `fmd deploy pull --config …`. Changing apps edits
   that config and deploys a new release. Rollback is `fmd release switch`.
+
+**Servers.** Every job is the same fm/fmd argv as for this machine, run through
+`ssh -o BatchMode=yes -o ControlMaster=auto … host -- bash -lc '<argv>'`, so tools resolve from
+the server's own PATH. State is read by sending `core/probe.py` to the server's `python3`.
+A Deployer site's config is kept locally per server and uploaded over stdin to
+`~/.instant-frappuccino/deployer/<site>.toml` before `fmd deploy pull`. A restore reads the
+MariaDB root password on the server, so the password never crosses SSH.
 
 **Secrets.** The GitHub token lives in `settings.json` (mode 600) and reaches fm and fmd only
 through the `GITHUB_TOKEN` env var. fmd configs reference it as `${GITHUB_TOKEN}`. When

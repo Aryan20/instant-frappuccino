@@ -13,7 +13,11 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from fmapp import APP_ID, APP_NAME, ORG_DOMAIN, __version__
 from fmapp.core import autostart
+from fmapp.core.hosts import LOCAL
+from fmapp.core.operations import MissingTool, Operations
+from fmapp.core.source import Source
 from fmapp.ui import theme
+from fmapp.ui.async_ import run_async
 from fmapp.ui.context import AppContext
 from fmapp.ui.main_window import MainWindow
 from fmapp.ui.tray import Tray
@@ -93,13 +97,16 @@ def run(argv: list[str] | None = None) -> int:
     ctx.system.start()
     autostart.sync(ctx.settings.autostart)
     if ctx.settings.autostart != "off" or background:
-        # Wait for the first bench scan (slow while Docker is still booting) so we know the sites.
-        def start_once() -> None:
-            if ctx.benches.loaded:
-                ctx.benches.changed.disconnect(start_once)
-                ctx.submit(window, lambda ops: ops.start_everything(ctx.sites_to_start()))
+        # Autostart brings up this computer, whichever server the window was last showing.
+        def start(benches: list) -> None:
+            try:
+                job = Operations(ctx.settings, LOCAL).start_everything(ctx.sites_to_start(benches))
+            except MissingTool as exc:
+                ctx.notify.emit(str(exc), 0)
+                return
+            ctx.jobs.submit(job)
 
-        ctx.benches.changed.connect(start_once)
+        run_async(Source(ctx.settings, LOCAL).benches, start)
 
     code = app.exec()
     server.close()

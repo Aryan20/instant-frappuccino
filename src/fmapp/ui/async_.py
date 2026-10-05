@@ -9,6 +9,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from fmapp.core.remote import RemoteError
+
 _live: set[_Relay] = set()
 
 
@@ -26,7 +28,8 @@ class _Task(QRunnable):
         try:
             result = self.fn()
         except Exception as exc:  # surfaced to the UI, never swallowed
-            traceback.print_exc()
+            if not isinstance(exc, RemoteError):  # an unreachable server isn't a bug
+                traceback.print_exc()
             self._emit(self.relay.failed, str(exc) or exc.__class__.__name__)
         else:
             self._emit(self.relay.done, result)

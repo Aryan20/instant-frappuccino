@@ -31,8 +31,24 @@ class DeployOptions:
     node_version: str = ""
 
 
-def config_path(site: str) -> Path:
-    return paths.deployer_configs_dir() / f"{site}.toml"
+REMOTE_DIR = ".instant-frappuccino/deployer"  # on servers, relative to the SSH login's home
+
+
+def config_path(site: str, host_id: str = "local") -> Path:
+    """This machine's copy of a site's config; servers' copies are kept per server."""
+    folder = paths.deployer_configs_dir()
+    if host_id != "local":
+        folder = folder / host_id
+        folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{site}.toml"
+
+
+def remote_path(site: str) -> str:
+    return f"{REMOTE_DIR}/{site}.toml"
+
+
+def dumps(config: dict[str, Any]) -> str:
+    return tomli_w.dumps(config)
 
 
 def build_config(site: str, apps: list[AppRef], options: DeployOptions) -> dict[str, Any]:
@@ -59,16 +75,16 @@ def build_config(site: str, apps: list[AppRef], options: DeployOptions) -> dict[
     }
 
 
-def load(site: str) -> dict[str, Any] | None:
+def load(site: str, host_id: str = "local") -> dict[str, Any] | None:
     try:
-        return tomllib.loads(config_path(site).read_text())
+        return tomllib.loads(config_path(site, host_id).read_text())
     except (OSError, tomllib.TOMLDecodeError):
         return None
 
 
-def save(site: str, config: dict[str, Any]) -> Path:
-    target = config_path(site)
-    paths.write_private(target, tomli_w.dumps(config))  # imported configs may carry credentials
+def save(site: str, config: dict[str, Any], host_id: str = "local") -> Path:
+    target = config_path(site, host_id)
+    paths.write_private(target, dumps(config))  # imported configs may carry credentials
     return target
 
 

@@ -58,23 +58,23 @@ def test_create_deployer_site_writes_config(ops):
 
 def test_add_apps_fm_bench_installs_only_new(ops):
     bench_dir = make_bench(paths.benches_dir(), "dev.localhost")
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     job = ops.add_apps(bench, [AppRef("frappe/hrms", "version-15")])
-    snapshot, get_app, install = job.steps
-    ctx: dict = {}
-    snapshot.action(ctx)
+    note, get_app, install = job.steps
+    assert note.argv[-1].endswith("ls apps > /tmp/.if-apps-before")
     script = get_app.argv[-1]
     assert "bench get-app --branch version-15" in script
     assert "x-access-token:ghp_secret_token@github.com/frappe/hrms" in script
     assert "remote set-url upstream" in script  # token scrubbed after clone
-    assert install.build(ctx) is None  # nothing cloned yet
-    (bench_dir / "workspace" / "frappe-bench" / "apps" / "hrms").mkdir()
-    assert install.build(ctx)[-1].endswith("bench --site dev.localhost install-app hrms")
+    # whatever get-app added is installed (folder names can differ from repo names)
+    assert "grep -vxF -f /tmp/.if-apps-before" in install.argv[-1]
+    assert "bench --site dev.localhost install-app $new" in install.argv[-1]
+    assert bench_dir.exists()
 
 
 def test_add_apps_deployer_bench_redeploys(ops):
     make_bench(paths.benches_dir(), "prod.localhost", deployer=True)
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     job = ops.add_apps(bench, [AppRef("frappe/hrms", "version-15")])
     write, deploy = job.steps
     write.action({})
@@ -162,7 +162,7 @@ def test_deployer_site_from_imported_config_keeps_everything(ops):
 
 def test_import_into_existing_site_renames_to_bench(ops):
     make_bench(paths.benches_dir(), "prod.localhost", deployer=True)
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     job = ops.import_config(bench, deployer.load_file("tests/fixtures/site.toml"))
     job.steps[0].action({})
     config = deployer.load("prod.localhost")
@@ -230,7 +230,7 @@ def test_pull_apps_then_migrate_and_build(ops):
 
 def test_backups_listing_and_restore(ops):
     bench_dir = make_bench(paths.benches_dir(), "a.localhost")
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     folder = bench.backups_dir
     folder.mkdir(parents=True)
     for name in (
@@ -242,7 +242,8 @@ def test_backups_listing_and_restore(ops):
         "notes.txt",
     ):
         (folder / name).write_text("x")
-    newest, older = benches.list_backups(folder)
+    [bench] = benches.discover(compose=[])
+    newest, older = bench.backups
     assert newest.stamp == "20260102_090000" and newest.public_files is None
     assert older.public_files and older.private_files and older.size == 3
     secrets = paths.fm_home() / "services" / "secrets"
@@ -267,7 +268,7 @@ def test_site_flags_from_site_config():
     (site_dir / "site_config.json").write_text(
         '{"maintenance_mode": 1, "pause_scheduler": 1, "db_password": "s"}'
     )
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     assert bench.maintenance_mode and bench.scheduler_paused
 
 
@@ -285,7 +286,7 @@ def test_terminal_argv():
 
 def test_redeploy_keeps_per_app_extras(ops):
     make_bench(paths.benches_dir(), "prod.localhost", deployer=True)
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     deployer.save(
         "prod.localhost",
         {
@@ -308,7 +309,7 @@ def test_adopt_config_pins_detached_head_to_commit(ops):
     from fmapp.core.models import InstalledApp
 
     make_bench(paths.benches_dir(), "a.localhost")
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     bench.apps = [
         InstalledApp(
             "frappe",

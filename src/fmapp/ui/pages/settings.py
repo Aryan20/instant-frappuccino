@@ -1,4 +1,4 @@
-"""Settings: tool health/installation, GitHub access, defaults, appearance."""
+"""Settings: tool health/installation, servers, GitHub access, defaults, appearance."""
 
 from __future__ import annotations
 
@@ -21,21 +21,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fmapp.core import autostart, paths
+from fmapp.core import autostart, hosts, paths
 from fmapp.core.engine import LABELS, Provider
 from fmapp.core.operations import Operations
 from fmapp.core.settings import FRAPPE_BRANCHES
+from fmapp.core.source import Source
 from fmapp.ui import theme
+from fmapp.ui.async_ import run_async
 from fmapp.ui.context import AppContext
+from fmapp.ui.dialogs.host import HostDialog
 from fmapp.ui.widgets import (
     Card,
     Pill,
     align_forms,
     button,
+    empty_state,
     fit_height,
     form_layout,
     label,
     page_header,
+    run_dialog,
     scroll_page,
     tidy_view,
 )
@@ -55,7 +60,7 @@ class SettingsPage(QWidget):
         self.ctx = ctx
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        _scroll, body = scroll_page(outer)
+        self._scroll, body = scroll_page(outer)
         columns = QHBoxLayout(body)
         columns.setContentsMargins(*theme.PAGE_MARGINS)
         column = QWidget()
@@ -91,6 +96,31 @@ class SettingsPage(QWidget):
         tools.body.addLayout(self.grid)
         tools.actions.addWidget(button("Re-check", on_click=ctx.tools.refresh))
         box.addWidget(tools)
+
+        servers = Card(
+            title="Servers",
+            subtitle="Manage benches on staging or production servers over SSH. Pick one from the "
+            "switcher in the sidebar.",
+        )
+        self.servers = QListWidget()
+        tidy_view(self.servers)
+        self.servers.itemDoubleClicked.connect(lambda _item: self._edit_server())
+        self.servers.itemSelectionChanged.connect(self._sync_server_buttons)
+        self.no_servers = empty_state("No servers yet", "Add one to manage its benches from here.")
+        servers.body.addWidget(self.servers)
+        servers.body.addWidget(self.no_servers)
+        self.edit_server_btn = button("Edit…", on_click=self._edit_server)
+        self.remove_server_btn = button("Remove", on_click=self._remove_server)
+        for widget in (
+            button("Add server…", on_click=self._add_server),
+            self.edit_server_btn,
+            self.remove_server_btn,
+        ):
+            servers.actions.addWidget(widget)
+        self.servers_card = servers
+        box.addWidget(servers)
+        ctx.hosts_changed.connect(self._render_servers)
+        self._render_servers()
 
         s = ctx.settings
         github = Card(title="GitHub")
@@ -156,7 +186,10 @@ class SettingsPage(QWidget):
             sform.addRow("", widget)
         startup.body.addLayout(sform)
         box.addWidget(startup)
-        ctx.benches.changed.connect(self._render_sites)
+        ctx.benches.changed.connect(lambda: self.ctx.host.is_local and self._render_sites())
+        ctx.host_changed.connect(self._render_sites)
+        if not ctx.host.is_local:
+            self._render_sites()
 
         defaults = Card(title="Defaults")
         dform = form_layout()
@@ -207,7 +240,67 @@ class SettingsPage(QWidget):
         ctx.tools.changed.connect(self._render_tools)
         self._render_tools()
 
+    # -- servers --------------------------------------------------------------------------
+    def show_servers(self) -> None:
+        self._scroll.ensureWidgetVisible(self.servers_card)
+
+    def _render_servers(self) -> None:
+        self.servers.clear()
+        for host in hosts.all_hosts(self.ctx.settings)[1:]:
+            text = f"{host.name}  ·  {host.destination}" + ("  ·  production" if host.production else "")
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, host.id)
+            self.servers.addItem(item)
+        self.servers.setVisible(self.servers.count() > 0)
+        self.no_servers.setVisible(self.servers.count() == 0)
+        fit_height(self.servers, self.servers.count(), max_rows=6)
+        self._sync_server_buttons()
+
+    def _sync_server_buttons(self) -> None:
+        selected = bool(self.servers.selectedItems())
+        self.edit_server_btn.setEnabled(selected)
+        self.remove_server_btn.setEnabled(selected)
+
+    def _selected_server(self):
+        items = self.servers.selectedItems()
+        return hosts.get(self.ctx.settings, items[0].data(Qt.ItemDataRole.UserRole)) if items else None
+
+    def _add_server(self) -> None:
+        dialog = HostDialog(parent=self)
+        if run_dialog(dialog):
+            self.ctx.save_host(dialog.host)
+            self.ctx.set_host(dialog.host.id)
+
+    def _edit_server(self) -> None:
+        host = self._selected_server()
+        if host is None:
+            return
+        dialog = HostDialog(host, parent=self)
+        if run_dialog(dialog):
+            self.ctx.save_host(dialog.host)
+
+    def _remove_server(self) -> None:
+        host = self._selected_server()
+        if host is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remove server",
+            f"Remove {host.name} from Instant Frappuccino? Nothing on the server is changed.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.ctx.remove_host(host.id)
+
+    # -- startup ----------------------------------------------------------------------------
     def _render_sites(self) -> None:
+        """Autostart is about this computer's sites, whichever host is being browsed."""
+        if self.ctx.host.is_local:
+            self._fill_sites([b.name for b in self.ctx.benches.benches])
+        else:
+            source = Source(self.ctx.settings, hosts.LOCAL)
+            run_async(source.benches, lambda benches: self._fill_sites([b.name for b in benches]))
+
+    def _fill_sites(self, names: list[str]) -> None:
         chosen = set(self.ctx.settings.autostart_sites)
         if self.sites_list.count():  # keep the user's unsaved ticks
             chosen = {
@@ -216,10 +309,10 @@ class SettingsPage(QWidget):
                 if self.sites_list.item(i).checkState() == Qt.CheckState.Checked
             }
         self.sites_list.clear()
-        for bench in self.ctx.benches.benches:
-            item = QListWidgetItem(bench.name)
+        for name in names:
+            item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if bench.name in chosen else Qt.CheckState.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if name in chosen else Qt.CheckState.Unchecked)
             self.sites_list.addItem(item)
         fit_height(self.sites_list, self.sites_list.count(), max_rows=6)
 
@@ -271,8 +364,8 @@ class SettingsPage(QWidget):
             autostart.sync(s.autostart)
         except OSError as exc:
             QMessageBox.warning(self, "Login item", f"Couldn't update the login item: {exc}")
-        self.ctx.benches.timer.setInterval(s.refresh_seconds * 1000)
-        self.ctx.system.timer.setInterval(s.refresh_seconds * 1000)
+        self.ctx.benches.restart_timer()
+        self.ctx.system.restart_timer()
         self.ctx.tools.refresh()
         self.ctx.benches.refresh()
         self.saved.setText("Saved.")

@@ -376,7 +376,9 @@ def page_header(title: str, subtitle: str = "") -> tuple[QWidget, QHBoxLayout]:
     text.setSpacing(theme.XS)
     text.addWidget(label(title, "h1"))
     if subtitle:
-        text.addWidget(label(subtitle, "muted", wrap=True))
+        sub = label(subtitle, "muted", wrap=True)
+        sub.setObjectName("PageSubtitle")  # pages whose subtitle changes look it up by name
+        text.addWidget(sub)
     layout.addLayout(text, 1)
     actions = QHBoxLayout()
     actions.setSpacing(theme.SM)

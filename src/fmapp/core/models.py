@@ -146,9 +146,10 @@ class Backup:
     """One ``bench backup`` run: a database dump plus optional file archives."""
 
     stamp: str  # e.g. 20260605_134807
-    database: Path
-    public_files: Path | None = None
-    private_files: Path | None = None
+    database: str  # file names inside the site's private/backups folder
+    public_files: str | None = None
+    private_files: str | None = None
+    size: int = 0  # bytes, all files of the run
 
     @property
     def created(self) -> datetime | None:
@@ -156,14 +157,6 @@ class Backup:
             return datetime.strptime(self.stamp, "%Y%m%d_%H%M%S")
         except ValueError:
             return None
-
-    @property
-    def size(self) -> int:
-        return sum(
-            p.stat().st_size
-            for p in (self.database, self.public_files, self.private_files)
-            if p and p.exists()
-        )
 
 
 @dataclass
@@ -176,6 +169,7 @@ class Bench:
     status: BenchStatus = BenchStatus.UNKNOWN
     kind: BenchKind = BenchKind.FM
     error: str = ""
+    backups: list[Backup] = field(default_factory=list)
     # Non-secret switches from sites/<site>/site_config.json
     maintenance_mode: bool = False
     scheduler_paused: bool = False

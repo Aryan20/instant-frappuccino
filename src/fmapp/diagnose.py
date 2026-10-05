@@ -13,10 +13,11 @@ import subprocess
 import sys
 import time
 
-from fmapp.core import benches
 from fmapp.core.env import tool_env, which
+from fmapp.core.hosts import LOCAL
 from fmapp.core.operations import Operations
 from fmapp.core.settings import Settings
+from fmapp.core.source import Source
 from fmapp.core.terminal import terminal_argv
 
 
@@ -31,9 +32,7 @@ def run() -> int:
         print(f"env {key}={os.environ[key]}")
     for tool in ("fm", "docker", "osascript", "open"):
         print(f"which {tool}: {which(tool)}")
-    running = [
-        b.name for b in benches.discover(statuses=benches.compose_statuses()) if b.status.value == "running"
-    ]
+    running = [b.name for b in Source(settings, LOCAL).benches() if b.status.value == "running"]
     print("running sites:", running)
     if running:
         argv = ops.login_url_argv(running[0])

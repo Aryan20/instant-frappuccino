@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 
@@ -130,7 +131,13 @@ def open_terminal(ctx: AppContext, parent: QWidget | None, site: str, console: b
         QMessageBox.warning(parent, "Terminal", str(exc))
         return
     what = "bench console" if console else "shell"
-    argv = terminal_argv(command, name=f"{site}-{'console' if console else 'shell'}")
+    if launch_terminal(parent, command, name=f"{site}-{'console' if console else 'shell'}"):
+        ctx.notify.emit(f"Opened a {what} for {site} in your terminal", 6000)
+
+
+def launch_terminal(parent: QWidget | None, command: list[str], name: str) -> bool:
+    """Run ``command`` in a new window of the user's terminal app; explain if that fails."""
+    argv = terminal_argv(command, name=name)
     problem = ""
     if not argv:
         problem = "No terminal app was found."
@@ -145,10 +152,9 @@ def open_terminal(ctx: AppContext, parent: QWidget | None, site: str, console: b
         QMessageBox.warning(
             parent,
             "Couldn't open a terminal",
-            f"{problem}\n\nRun this yourself:\n\n{' '.join(command)}",
+            f"{problem}\n\nRun this yourself:\n\n{shlex.join(command)}",
         )
-    else:
-        ctx.notify.emit(f"Opened a {what} for {site} in your terminal", 6000)
+    return not problem
 
 
 class RunCommandDialog(QDialog):
@@ -248,7 +254,8 @@ class AdminPasswordDialog(QDialog):
 def add_tool_actions(ctx: AppContext, parent: QWidget, site: str, menu: QMenu, running: bool) -> None:
     """Everyday tools for a running site, appended to a context / overflow menu."""
     menu.addAction("Log in as Administrator", lambda: login_as_admin(ctx, parent, site)).setEnabled(running)
-    menu.addAction("Open in VS Code", lambda: ctx.submit(parent, lambda ops: ops.open_code(site)))
+    if ctx.host.is_local:
+        menu.addAction("Open in VS Code", lambda: ctx.submit(parent, lambda ops: ops.open_code(site)))
     menu.addAction("Terminal (bench shell)", lambda: open_terminal(ctx, parent, site)).setEnabled(running)
     menu.addAction("Bench console", lambda: open_terminal(ctx, parent, site, console=True)).setEnabled(
         running

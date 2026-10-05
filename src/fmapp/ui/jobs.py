@@ -157,17 +157,16 @@ class JobRun(QObject):
                     self._emit(note + "\n")
                 self._next_step()
                 return
-            argv = step.build(self.job.context) if step.build else step.argv
         except Exception as exc:
             self._finish(RunState.FAILED, str(exc))
             return
-        if not argv:
+        if not step.argv:
             self._emit("Nothing to do, skipped.\n")
             self._next_step()
             return
-        self._spawn(argv)
+        self._spawn(step.argv, step.stdin)
 
-    def _spawn(self, argv: list[str]) -> None:
+    def _spawn(self, argv: list[str], stdin: str | None = None) -> None:
         self._emit("$ " + display_argv(argv) + "\n")
         process = QProcess(self)
         process.setProcessEnvironment(_process_env(self.job))
@@ -179,6 +178,9 @@ class JobRun(QObject):
         process.errorOccurred.connect(self._on_error)
         self._process = process
         process.start(argv[0], argv[1:])
+        if stdin is not None:  # e.g. a deploy config piped to a server over SSH
+            process.write(stdin.encode())
+        process.closeWriteChannel()
 
     def _on_error(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.ProcessError.FailedToStart:
@@ -224,8 +226,13 @@ class JobManager(QObject):
     def active(self) -> list[JobRun]:
         return [r for r in self.runs if not r.done]
 
-    def busy_benches(self) -> set[str]:
-        return {r.job.bench for r in self.runs if r.state is RunState.RUNNING and r.job.bench}
+    def busy_benches(self, host_id: str = "local") -> set[str]:
+        """Benches on ``host_id`` that have a running job."""
+        return {
+            r.job.bench
+            for r in self.runs
+            if r.state is RunState.RUNNING and r.job.bench and r.job.host.id == host_id
+        }
 
     KEEP_FINISHED = 50  # finished runs (and their logs) kept for the Activity page
 
@@ -242,15 +249,18 @@ class JobManager(QObject):
         self._pump()
 
     def _pump(self) -> None:
-        busy = self.busy_benches()
-        # Oldest first; runs are stored newest-first.
-        for run in reversed(self.runs):
+        # One job at a time per bench *per host*: a server's site may share a local site's name.
+        busy = {
+            (r.job.host.id, r.job.bench) for r in self.runs if r.state is RunState.RUNNING and r.job.bench
+        }
+        for run in reversed(self.runs):  # oldest first; runs are stored newest-first
             if run.state is not RunState.QUEUED:
                 continue
-            if run.job.bench and run.job.bench in busy:
+            key = (run.job.host.id, run.job.bench)
+            if run.job.bench and key in busy:
                 continue
             if run.job.bench:
-                busy.add(run.job.bench)
+                busy.add(key)
             run.start()
 
 

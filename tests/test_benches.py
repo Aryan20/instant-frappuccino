@@ -1,4 +1,4 @@
-from fmapp.core import benches, paths
+from fmapp.core import benches, paths, probe
 from fmapp.core.models import BenchKind, BenchStatus
 from tests.conftest import make_bench
 
@@ -7,7 +7,7 @@ def test_discover_fm_bench():
     root = paths.benches_dir()
     make_bench(root, "dev.localhost", admin_tools=True)
     compose = (root / "dev.localhost" / "docker-compose.yml").resolve()
-    [bench] = benches.discover(statuses={compose: BenchStatus.RUNNING})
+    [bench] = benches.discover(compose=[{"Status": "running(10)", "ConfigFiles": str(compose)}])
     assert bench.name == "dev.localhost"
     assert bench.kind is BenchKind.FM
     assert bench.status is BenchStatus.RUNNING
@@ -21,7 +21,7 @@ def test_discover_fm_bench():
 
 def test_discover_deployer_bench_and_releases():
     make_bench(paths.benches_dir(), "prod.localhost", deployer=True)
-    [bench] = benches.discover(statuses={})
+    [bench] = benches.discover(compose=[])
     assert bench.kind is BenchKind.DEPLOYER
     assert bench.status is BenchStatus.STOPPED
     assert [r.name for r in bench.releases] == ["release_20260101_120000", "release_20251201_090000"]
@@ -35,7 +35,7 @@ def test_missing_config_is_broken_and_unknown_without_docker():
     make_bench(root, "ok.localhost")
     broken = make_bench(root, "broken.localhost")
     (broken / "bench_config.toml").unlink()
-    found = {b.name: b for b in benches.discover(statuses=None)}
+    found = {b.name: b for b in benches.discover(compose=None)}
     assert found["broken.localhost"].status is BenchStatus.BROKEN
     assert "bench_config.toml" in found["broken.localhost"].error
     assert found["ok.localhost"].status is BenchStatus.UNKNOWN
@@ -47,7 +47,34 @@ def test_dirs_without_compose_are_ignored():
 
 
 def test_compose_state_parsing():
-    assert benches._parse_compose_state("running(10)") is BenchStatus.RUNNING
-    assert benches._parse_compose_state("running(2), exited(1)") is BenchStatus.PARTIAL
-    assert benches._parse_compose_state("exited(3)") is BenchStatus.STOPPED
-    assert benches._parse_compose_state("") is BenchStatus.STOPPED
+    assert probe.compose_state("running(10)") == "running"
+    assert probe.compose_state("running(2), exited(1)") == "partial"
+    assert probe.compose_state("exited(3)") == "stopped"
+    assert probe.compose_state("") == "stopped"
+
+
+def test_minimal_toml_matches_tomllib():
+    import tomllib
+
+    text = """# bench_config.toml
+name = "a.localhost"
+developer_mode = true
+admin_tools = false
+http_port = 8080
+ratio = 1.5
+apps_list = ["frappe", 'erpnext']
+literal = 'single'
+
+[environment]
+type = "prod"
+"""
+    assert probe._minimal_toml(text) == tomllib.loads(text)
+
+
+def test_snapshot_without_docker(tmp_path):
+    make_bench(paths.benches_dir(), "a.localhost")
+    raw = probe.snapshot(fm_home=str(paths.fm_home()), docker=str(tmp_path / "no-docker"))
+    assert raw["docker"]["running"] is False
+    [bench] = raw["benches"]
+    assert bench["status"] == "unknown" and bench["name"] == "a.localhost"
+    assert set(raw["tools"]) == {"fm", "fmd", "docker"}

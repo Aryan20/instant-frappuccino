@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fmapp.core import benches as benches_io
 from fmapp.core import deployer, paths
 from fmapp.core.env import tool_env
 from fmapp.core.info import InfoRow, parse_info
@@ -287,12 +286,13 @@ class SiteDetailPage(QWidget):
         toggles.body.addLayout(_grid(maintenance))
         toggles.body.addSpacing(theme.SM)
         toggles.body.addWidget(label("Tools", "h3"))
+        self.code_btn = button(
+            "VS Code",
+            on_click=lambda: self._run(lambda ops: ops.open_code(self.name)),
+            tooltip="fm code — opens the bench inside the container in VS Code",
+        )
         tools = (
-            button(
-                "VS Code",
-                on_click=lambda: self._run(lambda ops: ops.open_code(self.name)),
-                tooltip="fm code — opens the bench inside the container in VS Code",
-            ),
+            self.code_btn,
             button(
                 "Terminal",
                 on_click=lambda: open_terminal(self.ctx, self, self.name),
@@ -383,7 +383,8 @@ class SiteDetailPage(QWidget):
         row.setSpacing(theme.SM)
         self.backups_note = label("", "muted", wrap=True)
         row.addWidget(self.backups_note, 1)
-        row.addWidget(button("Show in folder", on_click=self._open_backups))
+        self.backups_folder_btn = button("Show in folder", on_click=self._open_backups)
+        row.addWidget(self.backups_folder_btn)
         self.restore_btn = button("Restore…", on_click=self._restore)
         row.addWidget(self.restore_btn)
         row.addWidget(button("Back up now", "primary", on_click=self._backup_now))
@@ -405,7 +406,8 @@ class SiteDetailPage(QWidget):
         return page
 
     def _render_backups(self, bench: Bench) -> None:
-        self._backups = benches_io.list_backups(bench.backups_dir)
+        self._backups = bench.backups
+        self.backups_folder_btn.setVisible(self.ctx.host.is_local)
         keep = self.backups_tree.currentItem().text(0) if self.backups_tree.currentItem() else None
         self.backups_tree.clear()
         for backup in self._backups:
@@ -413,7 +415,7 @@ class SiteDetailPage(QWidget):
             parts = (("public", backup.public_files), ("private", backup.private_files))
             files = ", ".join(name for name, path in parts if path)
             item = QTreeWidgetItem(
-                self.backups_tree, [when, backup.database.name, files or "—", _human(backup.size)]
+                self.backups_tree, [when, backup.database, files or "—", _human(backup.size)]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, backup.stamp)
             if when == keep:
@@ -426,7 +428,7 @@ class SiteDetailPage(QWidget):
         self.restore_btn.setEnabled(bool(self.backups_tree.selectedItems()))
 
     def _open_backups(self) -> None:
-        folder = self.bench.backups_dir
+        folder = self.bench.backups_dir  # only offered for this machine's sites
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder if folder.exists() else self.bench.site_dir)))
 
     def _backup_now(self) -> None:
@@ -546,7 +548,14 @@ class SiteDetailPage(QWidget):
         self.status.set(bench.status.value)
         is_fmd = bench.kind is BenchKind.DEPLOYER
         self.kind.set("Deployer" if is_fmd else "Frappe Manager", bench.kind.value)
-        self.subtitle.setText(f'<a href="{bench.url}">{bench.url}</a> · {bench.path}')
+        where = str(bench.path) if self.ctx.host.is_local else f"{self.ctx.host.name}:{bench.path}"
+        self.subtitle.setText(f'<a href="{bench.url}">{bench.url}</a> · {where}')
+        self.code_btn.setEnabled(self.ctx.host.is_local)
+        self.code_btn.setToolTip(
+            "fm code — opens the bench inside the container in VS Code"
+            if self.ctx.host.is_local
+            else "VS Code only opens benches on this machine"
+        )
         self.open_btn.setEnabled(running)
         self.admin_btn.setEnabled(running)
         self._render_backups(bench)
@@ -622,12 +631,12 @@ class SiteDetailPage(QWidget):
                 item.setData(0, Qt.ItemDataRole.UserRole, release.name)
                 if release.name == keep_release:
                     self.releases_tree.setCurrentItem(item)
-            config = deployer.load(bench.name)
+            config = deployer.load(bench.name, self.ctx.host.id)
             apps = deployer.apps_of(config)
             self.deploy_apps.setText(
                 "Deploy config: "
                 + ", ".join(a.display() for a in apps)
-                + f"\n{deployer.config_path(bench.name)}"
+                + f"\n{deployer.config_path(bench.name, self.ctx.host.id)}"
                 if apps
                 else "No deploy config yet — Deploy now will derive one from the installed apps."
             )
@@ -635,7 +644,7 @@ class SiteDetailPage(QWidget):
         self._update_busy()
 
     def _update_busy(self) -> None:
-        busy = self.name in self.ctx.jobs.busy_benches()
+        busy = self.name in self.ctx.jobs.busy_benches(self.ctx.host.id)
         self.toggle_btn.setEnabled(not busy)
         if busy:
             self.status.set("working…", "queued")
@@ -781,8 +790,13 @@ class SiteDetailPage(QWidget):
         self._run(lambda ops: ops.remove_app(self.bench, app), confirm=question)
 
     def _convert(self) -> None:
-        if not self.ctx.tools.ok("fmd"):
-            self.ctx.navigate.emit("settings")
+        if not self.ctx.system.has_tool("fmd"):
+            if self.ctx.host.is_local:
+                self.ctx.navigate.emit("settings")
+            else:
+                QMessageBox.information(
+                    self, "fmd missing", f"Install Frappe Deployer (fmd) on {self.ctx.host.name} first."
+                )
             return
         self._run(
             lambda ops: ops.convert_to_deployer(self.bench),
@@ -810,7 +824,7 @@ class SiteDetailPage(QWidget):
 
     def _deploy(self) -> None:
         bench = self.bench
-        config = deployer.load(bench.name)
+        config = deployer.load(bench.name, self.ctx.host.id)
         self._run(
             lambda ops: ops.deploy(bench.name, None if config else ops.adopt_config(bench)),
             confirm="Build a new release from the deploy config and switch to it?",

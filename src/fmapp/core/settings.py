@@ -31,6 +31,8 @@ class Settings:
     close_to_tray: bool = True  # closing the window keeps the app running in the tray
     stop_engine_with_everything: bool = False  # "Stop everything" also stops the engine
     command_history: list[str] = field(default_factory=list)  # Run command… recents (newest first)
+    hosts: list[dict] = field(default_factory=list)  # servers reached over SSH (see hosts.Host)
+    active_host: str = "local"
 
     def remember_command(self, command: str, limit: int = 25) -> None:
         self.command_history = [command, *[c for c in self.command_history if c != command]][:limit]

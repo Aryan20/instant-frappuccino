@@ -6,6 +6,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QListWidget,
@@ -31,7 +32,7 @@ from fmapp.ui.pages.settings import SettingsPage
 from fmapp.ui.pages.site_detail import SiteDetailPage
 from fmapp.ui.pages.sites import SitesPage
 from fmapp.ui.pages.system import SystemPage
-from fmapp.ui.widgets import StatusRow, label, run_dialog
+from fmapp.ui.widgets import Pill, StatusRow, label, run_dialog
 
 NAV = (
     ("sites", "Sites"),
@@ -50,7 +51,6 @@ class MainWindow(QMainWindow):
         self.tray: QSystemTrayIcon | None = None  # set by app.py when a tray is available
         self._quitting = False
         self._told_about_tray = False
-        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(QSize(1000, 640))
         self.resize(1240, 800)
         self.setUnifiedTitleAndToolBarOnMac(True)
@@ -74,7 +74,19 @@ class MainWindow(QMainWindow):
         for widget in (brand, sub):
             widget.setContentsMargins(10, 0, 0, 0)
             side.addWidget(widget)
-        side.addSpacing(theme.XL)
+        side.addSpacing(theme.LG)
+        self.host_box = QComboBox()
+        self.host_box.setToolTip("Which machine's benches you're managing")
+        self.host_box.activated.connect(self._host_picked)
+        side.addWidget(self.host_box)
+        self.production = Pill("Production", "broken")
+        self.production.setToolTip("Every change is shown and confirmed before it runs")
+        host_row = QHBoxLayout()
+        host_row.setContentsMargins(4, theme.XS, 0, 0)
+        host_row.addWidget(self.production)
+        host_row.addStretch()
+        side.addLayout(host_row)
+        side.addSpacing(theme.LG)
         self.nav = QListWidget()
         self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -130,6 +142,9 @@ class MainWindow(QMainWindow):
         ctx.system.changed.connect(self._render_health)
         ctx.jobs.changed.connect(self._render_badge)
         ctx.jobs.finished.connect(self._job_finished)
+        ctx.host_changed.connect(self._host_changed)
+        ctx.hosts_changed.connect(self._render_hosts)
+        self._render_hosts()
         self._shortcuts()
         self.nav.setCurrentRow(0)
         self.statusBar().setSizeGripEnabled(False)
@@ -190,17 +205,55 @@ class MainWindow(QMainWindow):
         dialog.import_config(path)  # problems show inline in the wizard
         run_dialog(dialog)
 
+    # -- hosts ----------------------------------------------------------------------------
+    def _render_hosts(self) -> None:
+        self.host_box.clear()
+        for host in self.ctx.hosts():
+            self.host_box.addItem(host.name, host.id)
+        self.host_box.insertSeparator(self.host_box.count())
+        self.host_box.addItem("Manage servers…", "")
+        self.host_box.setCurrentIndex(max(0, self.host_box.findData(self.ctx.host.id)))
+        host = self.ctx.host
+        self.production.setVisible(host.production)
+        self.setWindowTitle(APP_NAME if host.is_local else f"{APP_NAME} — {host.name}")
+
+    def _host_picked(self, index: int) -> None:
+        host_id = self.host_box.itemData(index)
+        if host_id:
+            self.ctx.set_host(host_id)
+            return
+        self.host_box.setCurrentIndex(max(0, self.host_box.findData(self.ctx.host.id)))
+        self.go("settings")
+        self.pages["settings"].show_servers()  # type: ignore[attr-defined]
+
+    def _host_changed(self) -> None:
+        self._render_hosts()
+        self._render_health()
+        if self.stack.currentWidget() is self.pages["site"]:
+            self.go("sites")  # the open site belongs to the previous host
+        self.statusBar().showMessage(f"Managing {self.ctx.host.name}", 4000)
+
     # -- status ---------------------------------------------------------------------------
     def _render_health(self) -> None:
+        system = self.ctx.system
         for key in ("fm", "fmd"):
+            if not self.ctx.host.is_local:
+                if system.loaded:
+                    ok = system.has_tool(key)
+                    self.health[key].set("installed" if ok else "missing", "running" if ok else "broken")
+                else:
+                    self.health[key].set("…", "unknown")
+                continue
             status = self.ctx.tools.tools.get(key)
             if status:
                 version = status.version.split()[-1] if status.ok and status.version else ""
                 self.health[key].set(
                     version if status.ok else "missing", "running" if status.ok else "broken"
                 )
-        system = self.ctx.system
-        if system.engine is not None:
+        if system.error:
+            self.health["docker"].set("unreachable", "broken")
+            self.health["proxy"].set("—", "unknown")
+        elif system.engine is not None:
             up = system.engine_running
             self.health["docker"].set("running" if up else "stopped", "running" if up else "broken")
             proxy = system.proxy_running

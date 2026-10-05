@@ -97,6 +97,8 @@ def pyinstaller(icon: Path) -> None:
         str(SRC),
         "--add-data",
         f"{SRC / 'fmapp' / 'assets'}{sep}fmapp/assets",
+        "--add-data",  # sent as source to servers' python3 (see core/remote.py)
+        f"{SRC / 'fmapp' / 'core' / 'probe.py'}{sep}fmapp/core",
         "--icon",
         str(icon),
     ]

@@ -6,6 +6,7 @@ from PySide6.QtCore import QPoint, QSize, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMenu,
     QTreeWidget,
@@ -14,11 +15,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fmapp.core import remote
 from fmapp.core.models import Bench, BenchKind, BenchStatus
 from fmapp.ui import theme
 from fmapp.ui.context import AppContext
 from fmapp.ui.dialogs.simple import ConfirmDeleteDialog
-from fmapp.ui.site_tools import add_tool_actions, open_in_browser
+from fmapp.ui.site_tools import add_tool_actions, launch_terminal, open_in_browser
 from fmapp.ui.widgets import (
     Banner,
     Pill,
@@ -48,7 +50,10 @@ def site_actions(ctx: AppContext, parent: QWidget, bench: Bench, menu: QMenu) ->
         menu.addAction("Restart", lambda: ctx.submit(parent, lambda ops: ops.restart(bench.name)))
     else:
         menu.addAction("Start", lambda: ctx.submit(parent, lambda ops: ops.start(bench.name)))
-    menu.addAction("Show in folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(bench.path))))
+    if ctx.host.is_local:
+        menu.addAction(
+            "Show in folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(bench.path)))
+        )
     menu.addSeparator()
     menu.addAction("Delete…", lambda: confirm_delete(ctx, parent, bench))
 
@@ -87,6 +92,7 @@ class SitesPage(QWidget):
         )
         actions.addWidget(button("New site", "primary", on_click=lambda: ctx.new_site.emit([])))
         box.addWidget(header)
+        self.subtitle = header.findChild(QLabel, "PageSubtitle")
 
         self.banner = Banner("warn")
         self.banner.hide()
@@ -131,9 +137,18 @@ class SitesPage(QWidget):
         box.addStretch(1)
 
         ctx.benches.changed.connect(self._render)
+        ctx.benches.changed.connect(self._update_banner)
         ctx.tools.changed.connect(self._update_banner)
         ctx.system.changed.connect(self._update_banner)
         ctx.jobs.changed.connect(self._render)
+        ctx.host_changed.connect(self._host_changed)
+        self._host_changed()
+
+    def _host_changed(self) -> None:
+        host = self.ctx.host
+        where = "this machine" if host.is_local else f"{host.name} ({host.destination})"
+        self.subtitle.setText(f"Frappe Manager benches on {where}")
+        self._update_banner()
 
     def _import_config(self) -> None:
         path = pick_fmd_config(self)
@@ -141,6 +156,9 @@ class SitesPage(QWidget):
             self.ctx.new_site_from_config.emit(path)
 
     def _update_banner(self) -> None:
+        if not self.ctx.host.is_local:
+            self._update_server_banner()
+            return
         tools, system = self.ctx.tools, self.ctx.system
         info = system.engine
         if tools.tools and not tools.ok("fm"):
@@ -172,11 +190,36 @@ class SitesPage(QWidget):
         else:
             self.banner.hide()
 
+    def _update_server_banner(self) -> None:
+        host, system = self.ctx.host, self.ctx.system
+        error = self.ctx.benches.error or system.error
+        if error:
+            self.banner.show_message(
+                error,
+                "Connect in Terminal",
+                lambda: launch_terminal(self, remote.login_argv(host), name=f"ssh-{host.name}"),
+            )
+        elif system.loaded and not system.has_tool("fm"):
+            self.banner.show_message(f"Frappe Manager (fm) isn't installed on {host.name}.")
+        elif system.engine is not None and not system.engine.running:
+            self.banner.show_message(
+                f"Docker isn't running on {host.name}. "
+                "Start it on the server (e.g. sudo systemctl start docker)."
+            )
+        elif system.engine is not None and not system.proxy_running:
+            self.banner.show_message(
+                f"The global proxy on {host.name} is down, so its sites won't load.",
+                "Start services",
+                lambda: self.ctx.submit(self, lambda ops: ops.services("start")),
+            )
+        else:
+            self.banner.hide()
+
     def _render(self) -> None:
         store = self.ctx.benches
         needle = self.search.text().strip().lower()
         selected = self.tree.currentItem().data(0, NAME) if self.tree.currentItem() else None
-        busy = self.ctx.jobs.busy_benches()
+        busy = self.ctx.jobs.busy_benches(self.ctx.host.id)
         self.tree.clear()
         for bench in store.benches:
             if needle and needle not in bench.name.lower():

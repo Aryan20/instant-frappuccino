@@ -126,8 +126,13 @@ class NewSiteDialog(QDialog):
         cards.addWidget(self.fm_card)
         cards.addWidget(self.fmd_card)
         box.addLayout(cards)
-        if not self.ctx.tools.ok("fmd"):
-            self.fmd_card.note.setText("⚠ fmd isn't installed — install it from Settings first.")
+        if not self.ctx.system.has_tool("fmd"):
+            where = (
+                "install it from Settings first"
+                if self.ctx.host.is_local
+                else f"install it on {self.ctx.host.name}"
+            )
+            self.fmd_card.note.setText(f"⚠ fmd isn't installed — {where}.")
             self.fmd_card.note.show()
 
         # Instant setup: start from an existing fmd site.toml.
@@ -311,8 +316,8 @@ class NewSiteDialog(QDialog):
             return "Use a domain-style name: lowercase letters, digits, dashes and dots."
         if self.ctx.benches.get(name):
             return f"A site named {name} already exists."
-        if self.kind is BenchKind.DEPLOYER and not self.ctx.tools.ok("fmd"):
-            return "Frappe Deployer (fmd) is not installed. Install it from Settings."
+        if self.kind is BenchKind.DEPLOYER and not self.ctx.system.has_tool("fmd"):
+            return f"Frappe Deployer (fmd) is not installed on {self.ctx.host.name}."
         return ""
 
     def _go(self, index: int) -> None:
@@ -341,7 +346,9 @@ class NewSiteDialog(QDialog):
             text = job.preview()
             if spec.kind is BenchKind.DEPLOYER:
                 config = tomli_w.dumps(self.ctx.ops.deployer_config(spec))
-                text += f"\n\n# {deployer.config_path(spec.name)}\n{mask(config, job.secrets)}"
+                text += (
+                    f"\n\n# {deployer.config_path(spec.name, self.ctx.host.id)}\n{mask(config, job.secrets)}"
+                )
             self.preview.setPlainText(text)
             self.next_btn.setEnabled(True)
         except MissingTool as exc:

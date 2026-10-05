@@ -3,6 +3,11 @@
 A :class:`Job` is pure data, so every command the GUI will run can be unit-tested and
 shown to the user ("Review" page) before anything executes. The UI layer only knows how
 to execute steps; it never assembles CLI arguments itself.
+
+Every job targets one :class:`~fmapp.core.hosts.Host`. For a server the same argv is
+wrapped in SSH (``remote.wrap``) and tools are called by name so the server's own PATH
+resolves them; anything that needs this machine (its Docker engine, VS Code) is refused
+for servers instead of silently misbehaving.
 """
 
 from __future__ import annotations
@@ -13,8 +18,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from fmapp.core import deployer, engine, paths
+from fmapp.core import deployer, engine, paths, remote
 from fmapp.core.env import which
+from fmapp.core.hosts import LOCAL, Host
 from fmapp.core.models import AppRef, Backup, Bench, BenchKind, SiteSpec
 from fmapp.core.settings import Settings
 
@@ -47,10 +53,10 @@ def strip_credentials(url: str) -> str:
 class Step:
     title: str
     argv: list[str] | None = None
-    # Lazily computed argv (runs right before the step; may depend on earlier steps).
-    build: Callable[[Context], list[str] | None] | None = None
     # In-process work (e.g. writing a config file). Returns text for the log.
     action: Callable[[Context], str | None] | None = None
+    # Written to the process's stdin, then closed (e.g. a config uploaded over SSH).
+    stdin: str | None = None
 
 
 @dataclass
@@ -61,17 +67,11 @@ class Job:
     env: dict[str, str] = field(default_factory=dict)
     secrets: list[str] = field(default_factory=list)
     context: Context = field(default_factory=dict)
+    host: Host = LOCAL
 
     def preview(self) -> str:
         """Human-readable command list for confirmation dialogs."""
-        lines = []
-        for step in self.steps:
-            if step.argv:
-                lines.append("$ " + display_argv(step.argv))
-            elif step.build:
-                lines.append(f"# {step.title} (computed when it runs)")
-            else:
-                lines.append(f"# {step.title}")
+        lines = ["$ " + display_argv(step.argv) if step.argv else f"# {step.title}" for step in self.steps]
         text = "\n".join(lines)
         for secret in self.secrets:
             if secret:
@@ -83,6 +83,10 @@ class MissingTool(RuntimeError):
     pass
 
 
+class NotOnServer(ValueError):
+    """The action only makes sense for this machine (its Docker engine, its editor)."""
+
+
 def _check_app_names(apps: list[str]) -> list[str]:
     """App names are interpolated into shell snippets: allow Python identifiers only."""
     for app in apps:
@@ -92,25 +96,56 @@ def _check_app_names(apps: list[str]) -> list[str]:
 
 
 class Operations:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, host: Host = LOCAL) -> None:
         self.settings = settings
+        self.host = host
 
-    # -- tool paths ---------------------------------------------------------------------
-    def fm(self) -> str:
-        path = which("fm", self.settings.fm_path)
+    # -- tools & job plumbing -----------------------------------------------------------
+    def _tool(self, name: str, override: str, missing: str) -> str:
+        if not self.host.is_local:
+            return name  # resolved by the server's login shell
+        path = which(name, override)
         if not path:
-            raise MissingTool("Frappe Manager (fm) is not installed. Install it from Settings.")
+            raise MissingTool(missing)
         return path
+
+    def fm(self) -> str:
+        return self._tool(
+            "fm", self.settings.fm_path, "Frappe Manager (fm) is not installed. Install it from Settings."
+        )
 
     def fmd(self) -> str:
-        path = which("fmd", self.settings.fmd_path)
-        if not path:
-            raise MissingTool("Frappe Deployer (fmd) is not installed. Install it from Settings.")
-        return path
+        return self._tool(
+            "fmd", self.settings.fmd_path, "Frappe Deployer (fmd) is not installed. Install it from Settings."
+        )
 
-    def _job(self, title: str, bench: str | None, steps: list[Step]) -> Job:
+    def docker(self) -> str:
+        return self._tool(
+            "docker",
+            self.settings.docker_path,
+            "The docker CLI was not found. Install Docker Desktop, OrbStack, Colima or Docker Engine.",
+        )
+
+    def _local_only(self, what: str) -> None:
+        if not self.host.is_local:
+            raise NotOnServer(f"{what} only works for this machine, not for {self.host.name}.")
+
+    def _job(self, title: str, bench: str | None, steps: list[Step], tty: bool = False) -> Job:
+        """Wrap every command for the target host; servers get their name in the title."""
+        for step in steps:
+            if step.argv:
+                step.argv = remote.wrap(self.host, step.argv, tty=tty)
         token = self.settings.github_token
-        return Job(title, bench, steps, env=self.settings.secret_env(), secrets=[token] if token else [])
+        if not self.host.is_local:
+            title = f"{title} · {self.host.name}"
+        return Job(
+            title,
+            bench,
+            steps,
+            env=self.settings.secret_env(),
+            secrets=[token] if token else [],
+            host=self.host,
+        )
 
     def _bench_sh(self, bench: str, script: str, title: str) -> Step:
         """Run a shell snippet inside the bench's frappe container."""
@@ -141,14 +176,11 @@ class Operations:
 
     def _create_fm_site(self, spec: SiteSpec) -> Job:
         apps = [AppRef("frappe/frappe", spec.frappe_ref), *spec.apps]
-        job = self._job(
+        return self._job(
             f"Create {spec.name}",
             spec.name,
-            [
-                Step(f"Create bench {spec.name}", self._fm_create_argv(spec, apps)),
-            ],
+            [Step(f"Create bench {spec.name}", self._fm_create_argv(spec, apps))],
         )
-        return job
 
     def deployer_config(self, spec: SiteSpec) -> dict[str, Any]:
         """The fmd config a Deployer site will be created with (shown on the Review step)."""
@@ -161,33 +193,57 @@ class Operations:
         )
         apps = [AppRef("frappe/frappe", spec.frappe_ref), *spec.apps]
         if spec.base_config is not None:
-            return deployer.merge_config(spec.base_config, spec.name, apps, options)
-        return deployer.build_config(spec.name, apps, options)
+            config = deployer.merge_config(spec.base_config, spec.name, apps, options)
+        else:
+            config = deployer.build_config(spec.name, apps, options)
+        return self._deployable(config)
 
     def _create_deployer_site(self, spec: SiteSpec) -> Job:
-        apps = [AppRef("frappe/frappe", spec.frappe_ref), *spec.apps]
         config = self.deployer_config(spec)
         base = replace(spec, environment="prod", developer_mode=False, apps=[])
+        frappe = AppRef("frappe/frappe", spec.frappe_ref)
         job = self._job(
             f"Create {spec.name} (Deployer)",
             spec.name,
             [
-                Step("Create production bench", self._fm_create_argv(base, [apps[0]])),
-                self._write_config_step(spec.name, config),
-                Step(
-                    "Build first release and switch",
-                    [self.fmd(), "deploy", "pull", "--config", str(deployer.config_path(spec.name))],
-                ),
+                Step("Create production bench", self._fm_create_argv(base, [frappe])),
+                *self._deploy_steps(spec.name, config, "Build first release and switch"),
             ],
         )
         job.secrets += deployer.secrets_of(config)
         return job
 
-    def _write_config_step(self, site: str, config: dict[str, Any]) -> Step:
-        def write(_: Context) -> str:
-            return f"Wrote deploy config → {deployer.save(site, config)}"
+    def _deployable(self, config: dict[str, Any]) -> dict[str, Any]:
+        """``${GITHUB_TOKEN}`` only resolves where the token is passed (this machine, if set).
 
-        return Step("Write deploy config", action=write)
+        fmd leaves undefined variables as literal text, which it would then try as a token;
+        servers use their own git credentials instead.
+        """
+        has_token = self.host.is_local and bool(self.settings.github_token)
+        if config.get("github_token") == "${GITHUB_TOKEN}" and not has_token:
+            return {**config, "github_token": ""}
+        return config
+
+    def _deploy_steps(self, site: str, config: dict[str, Any], title: str) -> list[Step]:
+        """Save the config (this machine's copy), put it where fmd reads it, then deploy."""
+        host_id = self.host.id
+
+        def save(_: Context) -> str:
+            return f"Saved deploy config → {deployer.save(site, config, host_id)}"
+
+        steps = [Step("Save deploy config", action=save)]
+        if self.host.is_local:
+            config_file = str(deployer.config_path(site))
+        else:
+            config_file = deployer.remote_path(site)
+            upload = f"mkdir -p {deployer.REMOTE_DIR} && umask 077 && cat > {shlex.quote(config_file)}"
+            steps.append(
+                Step(
+                    f"Upload config to {self.host.name}", ["bash", "-c", upload], stdin=deployer.dumps(config)
+                )
+            )
+        steps.append(Step(title, [self.fmd(), "deploy", "pull", "--config", config_file]))
+        return steps
 
     def start(self, bench: str) -> Job:
         return self._job(f"Start {bench}", bench, [Step("Start", [self.fm(), "-n", "start", bench])])
@@ -201,9 +257,10 @@ class Operations:
     def delete(self, bench: str, drop_db: bool = True) -> Job:
         argv = [self.fm(), "-n", "delete", bench, "--yes"]
         argv.append("--delete-db-from-global-db" if drop_db else "--no-delete-db-from-global-db")
+        host_id = self.host.id
 
         def forget_config(_: Context) -> str | None:
-            path = deployer.config_path(bench)
+            path = deployer.config_path(bench, host_id)
             if path.exists():
                 path.unlink()
                 return f"Removed deploy config {path}"
@@ -224,7 +281,8 @@ class Operations:
         argv = [self.fm(), "logs", bench, "--follow"]
         if service:
             argv += ["--service", service]
-        return self._job(f"Logs {bench}", None, [Step("Follow logs", argv)])
+        # A tty makes a server stop `fm logs -f` when the stream is closed here.
+        return self._job(f"Logs {bench}", None, [Step("Follow logs", argv)], tty=True)
 
     def migrate(self, bench: str) -> Job:
         return self._job(
@@ -273,9 +331,9 @@ class Operations:
         )
 
     def login_url_argv(self, bench: str) -> list[str]:
-        """Prints a one-time Administrator login URL (``bench browse`` can't open the host browser)."""
+        """Prints a one-time Administrator login URL (``bench browse`` can't open the browser)."""
         script = f"bench --site {shlex.quote(bench)} browse --user Administrator"
-        return self._bench_sh(bench, script, "Login").argv or []
+        return remote.wrap(self.host, self._bench_sh(bench, script, "Login").argv or [])
 
     @staticmethod
     def parse_login_url(output: str) -> str | None:
@@ -324,37 +382,51 @@ class Operations:
         return self._job(f"$ {command[:60]} · {bench}", bench, [self._bench_sh(bench, command, command)])
 
     def open_code(self, bench: str) -> Job:
-        return Job(f"Open {bench} in VS Code", None, [Step("fm code", [self.fm(), "-n", "code", bench])])
+        self._local_only("Opening VS Code")
+        return self._job(
+            f"Open {bench} in VS Code", None, [Step("fm code", [self.fm(), "-n", "code", bench])]
+        )
 
     def shell_command(self, bench: str, console: bool = False) -> list[str]:
-        argv = [self.fm(), "shell", bench]
-        return [*argv, "--bench-console"] if console else argv
+        """An interactive ``fm shell`` (or bench console), over SSH for servers."""
+        argv = [self.fm(), "shell", bench, *(["--bench-console"] if console else [])]
+        return remote.wrap(self.host, argv, tty=True)
 
     def restore(self, bench: Bench, backup: Backup, with_files: bool = True) -> Job:
         """Restore a backup from the site's own backups folder (paths mapped into the container)."""
-        root_password = paths.fm_home() / "services" / "secrets" / "db_root_password.txt"
-        try:
-            password = root_password.read_text().strip()
-        except OSError as exc:
-            raise MissingTool(f"Can't read the MariaDB root password from {root_password}") from exc
 
-        def inside(path) -> str:
-            return f"sites/{bench.name}/private/backups/{path.name}"
+        def inside(name: str) -> str:
+            return shlex.quote(f"sites/{bench.name}/private/backups/{name}")
 
         site = shlex.quote(bench.name)
-        script = f"bench --site {site} restore {shlex.quote(inside(backup.database))}"
-        script += f" --db-root-password {shlex.quote(password)}"
+        restore = f"bench --site {site} restore {inside(backup.database)}"
         if with_files and backup.public_files:
-            script += f" --with-public-files {shlex.quote(inside(backup.public_files))}"
+            restore += f" --with-public-files {inside(backup.public_files)}"
         if with_files and backup.private_files:
-            script += f" --with-private-files {shlex.quote(inside(backup.private_files))}"
-        steps = [
-            self._bench_sh(bench.name, script, f"Restore {backup.stamp}"),
-            self._bench_sh(bench.name, f"bench --site {shlex.quote(bench.name)} migrate", "bench migrate"),
-        ]
-        job = self._job(f"Restore {backup.stamp} · {bench.name}", bench.name, steps)
-        job.secrets.append(password)
-        return job
+            restore += f" --with-private-files {inside(backup.private_files)}"
+        migrate = self._bench_sh(bench.name, f"bench --site {site} migrate", "bench migrate")
+        secret_file = "services/secrets/db_root_password.txt"
+        if self.host.is_local:
+            password_file = paths.fm_home() / secret_file
+            try:
+                password = password_file.read_text().strip()
+            except OSError as exc:
+                raise MissingTool(f"Can't read the MariaDB root password from {password_file}") from exc
+            step = self._bench_sh(
+                bench.name, f"{restore} --db-root-password {shlex.quote(password)}", f"Restore {backup.stamp}"
+            )
+            job = self._job(f"Restore {backup.stamp} · {bench.name}", bench.name, [step, migrate])
+            job.secrets.append(password)
+            return job
+        # On a server the password is read there: it never travels over SSH or into the log.
+        password_file = remote._home_path(f"{self.host.fm_home.rstrip('/')}/{secret_file}")
+        fm_shell = shlex.join([self.fm(), "shell", bench.name, "--shell-path", "/bin/bash"])
+        script = (  # %q re-quotes the password for the container's shell, whatever it contains
+            f'pw=$(printf %q "$(cat {password_file})") && '
+            f'{fm_shell} -c "cd {BENCH_DIR} && {restore} --db-root-password $pw"'
+        )
+        step = Step(f"Restore {backup.stamp}", ["bash", "-c", script])
+        return self._job(f"Restore {backup.stamp} · {bench.name}", bench.name, [step, migrate])
 
     def run_tests(self, bench: str, app: str, module: str = "") -> Job:
         _check_app_names([app])
@@ -362,13 +434,12 @@ class Operations:
         script = f"bench --site {site} run-tests --app {app}"
         if module:
             script += f" --module {shlex.quote(module)}"
+        allow = f"bench --site {site} set-config allow_tests true"
         return self._job(
             f"Tests · {app} · {bench}",
             bench,
             [
-                self._bench_sh(
-                    bench, f"bench --site {site} set-config allow_tests true", "Allow tests on this site"
-                ),
+                self._bench_sh(bench, allow, "Allow tests on this site"),
                 self._bench_sh(bench, script, f"Run {app} tests"),
             ],
         )
@@ -397,7 +468,7 @@ class Operations:
         return self._job(f"Backup {bench}", bench, [self._bench_sh(bench, script, "bench backup")])
 
     def info_argv(self, bench: str) -> list[str]:
-        return [self.fm(), "info", bench]
+        return remote.wrap(self.host, [self.fm(), "info", bench])
 
     def restart_parts(self, bench: str, part: str) -> Job:
         """Targeted ``fm restart``: web | workers | redis | nginx | containers | all."""
@@ -426,19 +497,13 @@ class Operations:
         )
 
     # -- docker engine & global services ------------------------------------------------
-    def docker(self) -> str:
-        path = which("docker", self.settings.docker_path)
-        if not path:
-            raise MissingTool(
-                "The docker CLI was not found. Install Docker Desktop, OrbStack, Colima or Docker Engine."
-            )
-        return path
-
     def _engine(self) -> engine.Provider:
         # Context-only detection: never waits on the daemon, so it is safe on the GUI thread.
         return engine.provider(self.settings.docker_path, self.settings.engine_provider)
 
     def _ensure_engine_steps(self) -> list[Step]:
+        if not self.host.is_local:
+            return []  # a server's Docker belongs to its admins; it is never started from here
         docker = self.docker()
         start = engine.control_argv(self._engine(), "start", docker)[-1]
         # The "is it running?" check happens inside the step's process, not on the GUI thread.
@@ -456,6 +521,7 @@ class Operations:
         ]
 
     def engine_action(self, action: str) -> Job:
+        self._local_only("Controlling the Docker engine")
         docker = self.docker()
         provider = self._engine()
         steps = [
@@ -464,7 +530,7 @@ class Operations:
         ]
         if action != "stop":
             steps.append(Step("Wait for Docker", engine.wait_ready_argv(docker)))
-        return Job(f"{action.title()} Docker engine", SYSTEM, steps)
+        return self._job(f"{action.title()} Docker engine", SYSTEM, steps)
 
     def services(self, action: str, service: str = "all") -> Job:
         if action not in ("start", "stop", "restart"):
@@ -472,25 +538,20 @@ class Operations:
         steps = [] if action == "stop" else self._ensure_engine_steps()
         steps.append(Step(f"{action.title()} {service}", [self.fm(), "-n", "services", action, service]))
         label = "global services" if service == "all" else service
-        return Job(f"{action.title()} {label}", SYSTEM, steps)
+        return self._job(f"{action.title()} {label}", SYSTEM, steps)
 
     def container(self, action: str, container_id: str, name: str = "") -> Job:
         if action not in ("start", "stop", "restart"):
             raise ValueError(action)
         title = f"{action.title()} {name or container_id[:12]}"
-        return Job(title, None, [Step(title, [self.docker(), action, container_id])])
+        return self._job(title, None, [Step(title, [self.docker(), action, container_id])])
 
     def container_logs(self, container_id: str) -> Job:
-        return Job(
-            "Container logs",
-            None,
-            [
-                Step("Follow logs", [self.docker(), "logs", "--follow", "--tail", "500", container_id]),
-            ],
-        )
+        argv = [self.docker(), "logs", "--follow", "--tail", "500", container_id]
+        return self._job("Container logs", None, [Step("Follow logs", argv)], tty=True)
 
     def stop_conflicting(self, container_ids: list[str]) -> Job:
-        return Job(
+        return self._job(
             "Free ports 80/443",
             SYSTEM,
             [
@@ -505,23 +566,24 @@ class Operations:
             Step("Start global services", [self.fm(), "-n", "services", "start", "all"]),
         ]
         steps += [Step(f"Start {site}", [self.fm(), "-n", "start", site]) for site in sites]
-        return Job("Start everything", SYSTEM, steps)
+        return self._job("Start everything", SYSTEM, steps)
 
     def stop_everything(self, sites: list[str], stop_engine: bool = False) -> Job:
         steps = [Step(f"Stop {site}", [self.fm(), "-n", "stop", site]) for site in sites]
         steps.append(Step("Stop global services", [self.fm(), "-n", "services", "stop", "all"]))
-        if stop_engine:
+        if stop_engine and self.host.is_local:
             docker = self.docker()
             steps += [
                 Step("Stop Docker engine", argv)
                 for argv in engine.control_argv(self._engine(), "stop", docker)
             ]
-        return Job("Stop everything", SYSTEM, steps)
+        return self._job("Stop everything", SYSTEM, steps)
 
     def reclaim_space(self) -> Job:
         """Dangling images + build cache only — never volumes (they hold your databases)."""
+        self._local_only("Reclaiming disk space")
         docker = self.docker()
-        return Job(
+        return self._job(
             "Reclaim disk space",
             SYSTEM,
             [
@@ -534,38 +596,29 @@ class Operations:
     def _clone_url(self, app: AppRef) -> str:
         url = app.clone_url
         token = self.settings.github_token
-        if token and url.startswith("https://github.com/"):
+        # Never ship this machine's token to a server; servers use their own git credentials.
+        if token and self.host.is_local and url.startswith("https://github.com/"):
             url = url.replace("https://", f"https://x-access-token:{token}@", 1)
         return url
 
     def add_apps(self, bench: Bench, apps: list[AppRef]) -> Job:
         if bench.kind is BenchKind.DEPLOYER:
             return self.redeploy_with(bench, add=apps)
-
-        apps_dir = bench.bench_root / "apps"
-
-        def snapshot(ctx: Context) -> str:
-            ctx["before"] = {p.name for p in apps_dir.iterdir()} if apps_dir.is_dir() else set()
-            return f"{len(ctx['before'])} apps currently in bench"
-
-        steps = [Step("Snapshot apps", action=snapshot)]
+        site = shlex.quote(bench.name)
+        steps = [self._bench_sh(bench.name, "ls apps > /tmp/.if-apps-before", "Note current apps")]
         for app in apps:
             branch = f"--branch {shlex.quote(app.ref)} " if app.ref else ""
             script = f"bench get-app {branch}{shlex.quote(self._clone_url(app))}"
-            if self.settings.github_token:
+            if self.settings.github_token and self.host.is_local:
                 script += f" && {_SCRUB_TOKENS}"
             steps.append(self._bench_sh(bench.name, script, f"Get {app.display()}"))
-
-        def install(ctx: Context) -> list[str] | None:
-            after = {p.name for p in apps_dir.iterdir()} if apps_dir.is_dir() else set()
-            new = sorted(after - ctx.get("before", set()))
-            if not new:
-                return None
-            names = " ".join(shlex.quote(n) for n in new)
-            script = f"bench --site {shlex.quote(bench.name)} install-app {names}"
-            return self._bench_sh(bench.name, script, "Install").argv
-
-        steps.append(Step("Install into site", build=install))
+        # Install whatever get-app added (an app's folder name can differ from its repo name).
+        install = (
+            "new=$(ls apps | grep -vxF -f /tmp/.if-apps-before | tr '\\n' ' '); "
+            f'if [ -n "$new" ]; then bench --site {site} install-app $new; '
+            'else echo "No new apps to install."; fi'
+        )
+        steps.append(self._bench_sh(bench.name, install, "Install into site"))
         return self._job(f"Add apps to {bench.name}", bench.name, steps)
 
     def remove_app(self, bench: Bench, app_name: str) -> Job:
@@ -581,21 +634,21 @@ class Operations:
 
     # -- deployer -----------------------------------------------------------------------
     def deploy(self, bench: str, config: dict[str, Any] | None = None, title: str = "") -> Job:
-        steps = []
-        if config is not None:
-            steps.append(self._write_config_step(bench, config))
-        steps.append(
-            Step(
-                "Build release and switch",
-                [self.fmd(), "deploy", "pull", "--config", str(deployer.config_path(bench))],
-            )
+        """Deploy ``config`` (or this machine's saved copy of the site's config) as a release."""
+        config = config if config is not None else deployer.load(bench, self.host.id)
+        if config is None:
+            raise ValueError(f"No deploy config for {bench} yet.")
+        config = self._deployable(config)
+        job = self._job(
+            title or f"Deploy {bench}", bench, self._deploy_steps(bench, config, "Build release and switch")
         )
-        return self._job(title or f"Deploy {bench}", bench, steps)
+        job.secrets += deployer.secrets_of(config)
+        return job
 
     def redeploy_with(
         self, bench: Bench, add: list[AppRef] | None = None, remove: list[str] | None = None
     ) -> Job:
-        config = deployer.load(bench.name) or self.adopt_config(bench)
+        config = deployer.load(bench.name, self.host.id) or self.adopt_config(bench)
         # Edit the existing [[apps]] tables in place so per-app extras (hooks, symlink…) survive.
         tables = [t for t in config.get("apps", []) if isinstance(t, dict) and t.get("repo")]
         dropped = {app.name_guess for app in add or []} | set(remove or [])
@@ -623,9 +676,7 @@ class Operations:
         config = deployer.merge_config(
             imported.config, bench.name, [frappe, *imported.apps], imported.options
         )
-        job = self.deploy(bench.name, config, title=f"Deploy {imported.path.name} → {bench.name}")
-        job.secrets += deployer.secrets_of(config)
-        return job
+        return self.deploy(bench.name, config, title=f"Deploy {imported.path.name} → {bench.name}")
 
     def convert_to_deployer(self, bench: Bench) -> Job:
         return self.deploy(
@@ -647,14 +698,13 @@ class Operations:
         uv = which("uv")
         if not uv:
             raise MissingTool("uv is required to install tools: https://docs.astral.sh/uv/")
-        python = "3.13"
         return Job(
             f"Install {package}",
             None,
             [
                 Step(
                     f"uv tool install {package}",
-                    [uv, "tool", "install", "--upgrade", package, "--python", python],
-                ),
+                    [uv, "tool", "install", "--upgrade", package, "--python", "3.13"],
+                )
             ],
         )

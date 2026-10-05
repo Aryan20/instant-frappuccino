@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QMenu,
     QMessageBox,
     QTreeWidget,
@@ -136,6 +137,7 @@ class SystemPage(QWidget):
         actions.addWidget(button("Stop everything", on_click=self._stop_all))
         actions.addWidget(button("Start everything", "primary", on_click=self._start_all))
         box.addWidget(header)
+        self.subtitle = header.findChild(QLabel, "PageSubtitle")
 
         self.banner = Banner("warn")
         self.banner.hide()
@@ -218,9 +220,10 @@ class SystemPage(QWidget):
         box.addWidget(cont)
 
         # disk
-        disk = Card(title="Disk usage", subtitle="Space used by Docker on this machine")
+        disk = Card(title="Disk usage", subtitle="Space used by Docker")
         disk.actions.addWidget(button("Refresh", on_click=lambda: ctx.system.refresh(with_disk=True)))
-        disk.actions.addWidget(button("Reclaim space…", on_click=self._reclaim))
+        self.reclaim_btn = button("Reclaim space…", on_click=self._reclaim)
+        disk.actions.addWidget(self.reclaim_btn)
         self.disk_row = QHBoxLayout()
         self.disk_row.setSpacing(theme.MD)
         disk.body.addLayout(self.disk_row)
@@ -231,7 +234,20 @@ class SystemPage(QWidget):
 
         ctx.system.changed.connect(self.render)
         ctx.jobs.changed.connect(self.render)
+        ctx.host_changed.connect(self._host_changed)
+        self._host_changed()
         self._sync_buttons()
+
+    def _host_changed(self) -> None:
+        local = self.ctx.host.is_local
+        self.subtitle.setText(
+            "Docker engine, global services and every container — no Docker Desktop window needed"
+            if local
+            else f"Global services and containers on {self.ctx.host.name}"
+        )
+        self.reclaim_btn.setVisible(local)
+        self._disk_shown = []
+        self.render()
 
     # -- lifecycle ------------------------------------------------------------------------
     def showEvent(self, event) -> None:
@@ -247,8 +263,19 @@ class SystemPage(QWidget):
     def render(self) -> None:
         sysstore = self.ctx.system
         info = sysstore.engine
-        busy = "@system" in self.ctx.jobs.busy_benches()
+        local = self.ctx.host.is_local
+        busy = "@system" in self.ctx.jobs.busy_benches(self.ctx.host.id)
+        if sysstore.error:
+            self.banner.show_message(sysstore.error)
         if info is None:
+            if not sysstore.error:
+                self.banner.hide()
+            self.engine_pill.set("…", "unknown")
+            self.engine_meta.setText("")
+            fill_container_tree(self.tree, [])
+            self.count.setText("")
+            for widget in (self.engine_start, self.engine_restart, self.engine_stop):
+                widget.hide()
             return
         if busy:
             self.engine_pill.set("working…", "queued")
@@ -256,20 +283,21 @@ class SystemPage(QWidget):
             self.engine_pill.set(
                 "running" if info.running else "stopped", "running" if info.running else "stopped"
             )
-        bits = [info.label]
+        bits = [info.label if local else f"Docker on {self.ctx.host.name}"]
         if info.version:
             bits.append(f"engine {info.version}")
         if info.context:
             bits.append(f"context “{info.context}”")
-        self.engine_meta.setText(
-            " · ".join(bits)
-            + ("" if info.controllable else "\nProvider unknown — choose it in Settings → Engine.")
-        )
+        if not local:
+            note = "\nThe server's Docker is managed on the server itself."
+        else:
+            note = "" if info.controllable else "\nProvider unknown — choose it in Settings → Engine."
+        self.engine_meta.setText(" · ".join(bits) + note)
         for widget in (self.engine_start, self.engine_restart, self.engine_stop):
             widget.setEnabled(info.controllable and not busy)
-        self.engine_start.setVisible(not info.running)
-        self.engine_restart.setVisible(info.running)
-        self.engine_stop.setVisible(info.running)
+        self.engine_start.setVisible(local and not info.running)
+        self.engine_restart.setVisible(local and info.running)
+        self.engine_stop.setVisible(local and info.running)
 
         for name, (pill, toggle) in self.svc_rows.items():
             container = sysstore.service(name)
@@ -285,7 +313,11 @@ class SystemPage(QWidget):
             toggle.setText("Stop" if container and container.running else "Start")
             toggle.setEnabled(info.running and not busy)
 
-        if sysstore.conflicts:
+        if sysstore.error:
+            pass  # shown above
+        elif not local and not info.running:
+            self.banner.show_message(f"Docker isn't running on {self.ctx.host.name}. Start it on the server.")
+        elif local and sysstore.conflicts:
             names = ", ".join(c.name for c in sysstore.conflicts)
             self.banner.show_message(
                 f"Ports 80/443 are held by {names} (not Frappe Manager). The fm proxy can't serve "

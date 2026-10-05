@@ -57,7 +57,10 @@ class Tray(QSystemTrayIcon):
         m.clear()
         system = self.ctx.system
         info = system.engine
-        if info is None:
+        host = self.ctx.host
+        if system.error:
+            state = f"● {host.name}: unreachable"
+        elif info is None:
             state = "Checking Docker…"
         elif not info.running:
             state = f"● {info.label}: stopped"
@@ -65,6 +68,8 @@ class Tray(QSystemTrayIcon):
             proxy = "proxy up" if system.proxy_running else "proxy DOWN"
             running = len(self.ctx.running_sites())
             state = f"● Docker running · {proxy} · {running} site(s) up"
+        if not host.is_local and not system.error:
+            state = f"{host.name} · {state[2:]}"
         header = QAction(state, m)
         header.setEnabled(False)
         m.addAction(header)
@@ -114,6 +119,7 @@ class Tray(QSystemTrayIcon):
         )
         services.addAction("Restart all services", lambda: self._submit(lambda ops: ops.services("restart")))
         engine = m.addMenu("Docker engine")
+        engine.setEnabled(host.is_local)  # a server's Docker is managed on the server
         if info and info.running:
             engine.addAction("Restart engine", lambda: self._submit(lambda ops: ops.engine_action("restart")))
             engine.addAction("Stop engine", lambda: self._submit(lambda ops: ops.engine_action("stop")))

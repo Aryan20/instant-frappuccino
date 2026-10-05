@@ -46,3 +46,4 @@ pythonpath = ["src"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/fmapp/ui/theme.py" = ["E501"]  # stylesheet lines read better unwrapped
+"src/fmapp/core/probe.py" = ["UP"]  # also runs on servers' python3: keep it Python 3.8-compatible
