@@ -240,7 +240,8 @@ class MarketplacePage(QWidget):
             match = wanted if wanted in branches else next((b for b in preferred or [] if b in branches), "")
             self.branch.setCurrentText(match)
 
-        run_async(lambda: marketplace.list_branches(org_repo, token), fill)
+        ssh = self.ctx.settings.git_over_ssh
+        run_async(lambda: marketplace.list_branches(org_repo, token, ssh), fill)
 
     def _ref(self) -> AppRef | None:
         try:

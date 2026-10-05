@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -21,6 +22,8 @@ from pathlib import Path
 
 from fmapp import __version__
 from fmapp.core import paths
+from fmapp.core.env import git_env, tool_env, which
+from fmapp.core.models import AppRef
 
 BASE = "https://cloud.frappe.io"
 INDEX_URL = f"{BASE}/api/method/press.api.marketplace.get_marketplace_apps"
@@ -269,13 +272,19 @@ _BRANCHES: dict[tuple[str, bool], tuple[float, list[str]]] = {}
 BRANCH_TTL = 600  # seconds; GitHub allows only 60 unauthenticated requests per hour
 
 
-def list_branches(org_repo: str, token: str = "") -> list[str]:
-    """Remote branches via the GitHub API, cached in memory (failures are not cached)."""
-    key = (org_repo.lower(), bool(token))  # a token can reveal private repos' branches
+def list_branches(org_repo: str, token: str = "", ssh: bool = False) -> list[str]:
+    """Remote branches via the GitHub API, cached in memory (failures are not cached).
+
+    With ``ssh``, a repo the API can't see (private, no token) is listed with
+    ``git ls-remote`` over the user's SSH keys instead.
+    """
+    key = (org_repo.lower(), bool(token) or ssh)  # both can reveal private repos' branches
     cached = _BRANCHES.get(key)
     if cached and time.time() - cached[0] < BRANCH_TTL:
         return cached[1]
     branches = _fetch_branches(org_repo, token)
+    if not branches and ssh:
+        branches = _sorted_branches(ls_remote_branches(f"git@github.com:{org_repo}.git"))
     if branches:
         _BRANCHES[key] = (time.time(), branches)
     return branches
@@ -292,5 +301,40 @@ def _fetch_branches(org_repo: str, token: str) -> list[str]:
             branches = [b["name"] for b in json.loads(response.read())]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError):
         return []
+    return _sorted_branches(branches)
+
+
+def branches_for(app: AppRef, token: str = "", ssh: bool = False) -> list[str]:
+    """Branches of any app source: the GitHub API where it can, else ``git ls-remote``."""
+    if app.org_repo:
+        return list_branches(app.org_repo, token, ssh)
+    return _sorted_branches(ls_remote_branches(app.ssh_url if ssh or app.is_ssh else app.clone_url))
+
+
+def ls_remote_branches(url: str) -> list[str]:
+    """Branch names of any git remote, using the user's git credentials (never prompts)."""
+    git = which("git")
+    if not git:
+        return []
+    try:
+        proc = subprocess.run(
+            [git, "ls-remote", "--heads", url],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=tool_env(git_env()),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    prefix = "refs/heads/"
+    return [
+        ref[len(prefix) :]
+        for _sha, _, ref in (ln.partition("\t") for ln in proc.stdout.splitlines())
+        if ref.startswith(prefix)
+    ]
+
+
+def _sorted_branches(branches: list[str]) -> list[str]:
     preferred = [b for b in branches if re.fullmatch(r"version-\d+|develop|main|master", b)]
     return sorted(preferred, reverse=True) + sorted(b for b in branches if b not in preferred)

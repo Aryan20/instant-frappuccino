@@ -221,7 +221,7 @@ def merge_config(
         original = originals.get(_app_key(app), {})
         extras = {k: v for k, v in original.items() if k not in ("repo", "ref", "subdir_path")}
         table = {**app.to_fmd_table(), **extras}
-        if original.get("repo") and _app_key(original) == _app_key(app):
+        if app.org_repo and original.get("repo") and _app_key(original) == _app_key(app):
             table["repo"] = original["repo"]  # keep the user's spelling (URL vs org/repo)
         tables.append(table)
     config["apps"] = tables

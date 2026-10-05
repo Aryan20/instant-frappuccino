@@ -12,6 +12,7 @@ for servers instead of silently misbehaving.
 
 from __future__ import annotations
 
+import base64
 import re
 import shlex
 from collections.abc import Callable
@@ -19,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from fmapp.core import deployer, engine, paths, remote
-from fmapp.core.env import which
+from fmapp.core.env import GIT_SSH_BATCH, git_env, which
 from fmapp.core.hosts import LOCAL, Host
 from fmapp.core.models import AppRef, Backup, Bench, BenchKind, SiteSpec
 from fmapp.core.settings import Settings
@@ -28,6 +29,23 @@ Context = dict[str, Any]
 BENCH_DIR = "/workspace/frappe-bench"
 # Lock key for engine / global-service jobs so they never overlap each other.
 SYSTEM = "@system"
+# `fm shell -c` re-quotes its argument (`bash -c "<cmd>"`, then shlex.split), so a script's own
+# quotes would be mangled. Shipping it base64-encoded into a temp file survives that, keeps
+# stdin free for the script's commands, and still works if fm ever passes -c through as is.
+_RUN_ENCODED = "f=$(mktemp) && echo {} | base64 -d > $f && bash $f; r=$?; rm -f $f; exit $r"
+
+
+def _encoded(script: str) -> str:
+    return _RUN_ENCODED.format(base64.b64encode(script.encode()).decode())
+
+
+# Inside a bench container: never prompt, and use a shared agent on /fm-sockets if one runs
+# (`fm shell -c` is non-interactive, so nothing from .bashrc has started or found an agent).
+_CONTAINER_GIT_SSH = (
+    f'export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${{GIT_SSH_COMMAND:-{GIT_SSH_BATCH}}}"; '
+    '[ -n "$SSH_AUTH_SOCK" ] || [ ! -S /fm-sockets/ssh-agent.sock ] '
+    "|| export SSH_AUTH_SOCK=/fm-sockets/ssh-agent.sock; "
+)
 # `bench get-app` stores the clone URL as the git remote; drop any token we embedded.
 _SCRUB_TOKENS = (
     'for d in apps/*/; do u=$(git -C "$d" remote get-url upstream 2>/dev/null) || continue; '
@@ -57,6 +75,11 @@ class Step:
     action: Callable[[Context], str | None] | None = None
     # Written to the process's stdin, then closed (e.g. a config uploaded over SSH).
     stdin: str | None = None
+    # What previews and logs show instead of argv (e.g. a container script before encoding).
+    shown: str = ""
+
+    def display(self) -> str:
+        return self.shown or display_argv(self.argv or [])
 
 
 @dataclass
@@ -71,7 +94,7 @@ class Job:
 
     def preview(self) -> str:
         """Human-readable command list for confirmation dialogs."""
-        lines = ["$ " + display_argv(step.argv) if step.argv else f"# {step.title}" for step in self.steps]
+        lines = ["$ " + step.display() if step.argv else f"# {step.title}" for step in self.steps]
         text = "\n".join(lines)
         for secret in self.secrets:
             if secret:
@@ -130,29 +153,41 @@ class Operations:
         if not self.host.is_local:
             raise NotOnServer(f"{what} only works for this machine, not for {self.host.name}.")
 
+    @property
+    def clone_token(self) -> str:
+        """The GitHub token, when clones should use it.
+
+        Never on servers (they use their own git credentials), and not when the user chose
+        SSH keys. Without a token, fm, fmd and our ``bench get-app`` clone public repos over
+        HTTPS and fall back to SSH for private ones.
+        """
+        s = self.settings
+        return s.github_token if self.host.is_local and not s.git_over_ssh else ""
+
     def _job(self, title: str, bench: str | None, steps: list[Step], tty: bool = False) -> Job:
         """Wrap every command for the target host; servers get their name in the title."""
         for step in steps:
             if step.argv:
                 step.argv = remote.wrap(self.host, step.argv, tty=tty)
-        token = self.settings.github_token
+                if step.shown and not self.host.is_local:
+                    step.shown = f"[{self.host.destination}] {step.shown}"
+        token = self.clone_token
         if not self.host.is_local:
             title = f"{title} · {self.host.name}"
         return Job(
             title,
             bench,
             steps,
-            env=self.settings.secret_env(),
-            secrets=[token] if token else [],
+            env={**git_env(), **({"GITHUB_TOKEN": token} if token else {})},
+            secrets=[self.settings.github_token] if self.settings.github_token else [],
             host=self.host,
         )
 
     def _bench_sh(self, bench: str, script: str, title: str) -> Step:
         """Run a shell snippet inside the bench's frappe container."""
-        return Step(
-            title,
-            [self.fm(), "shell", bench, "--shell-path", "/bin/bash", "-c", f"cd {BENCH_DIR} && {script}"],
-        )
+        script = f"cd {BENCH_DIR} || exit 1; {script}"
+        shell = [self.fm(), "shell", bench, "--shell-path", "/bin/bash", "-c"]
+        return Step(title, [*shell, _encoded(script)], shown=display_argv([*shell, script]))
 
     # -- site lifecycle -----------------------------------------------------------------
     def create_site(self, spec: SiteSpec) -> Job:
@@ -219,8 +254,7 @@ class Operations:
         fmd leaves undefined variables as literal text, which it would then try as a token;
         servers use their own git credentials instead.
         """
-        has_token = self.host.is_local and bool(self.settings.github_token)
-        if config.get("github_token") == "${GITHUB_TOKEN}" and not has_token:
+        if config.get("github_token") == "${GITHUB_TOKEN}" and not self.clone_token:
             return {**config, "github_token": ""}
         return config
 
@@ -420,12 +454,16 @@ class Operations:
             return job
         # On a server the password is read there: it never travels over SSH or into the log.
         password_file = remote._home_path(f"{self.host.fm_home.rstrip('/')}/{secret_file}")
-        fm_shell = shlex.join([self.fm(), "shell", bench.name, "--shell-path", "/bin/bash"])
-        script = (  # %q re-quotes the password for the container's shell, whatever it contains
-            f'pw=$(printf %q "$(cat {password_file})") && '
-            f'{fm_shell} -c "cd {BENCH_DIR} && {restore} --db-root-password $pw"'
+        fm_shell = shlex.join([self.fm(), "shell", bench.name, "--shell-path", "/bin/bash", "-c"])
+        before, after = _RUN_ENCODED.split("{}")
+        container = f"cd {BENCH_DIR} || exit 1; {restore}".replace("%", "%%") + " --db-root-password %q"
+        script = (  # the container script is built and encoded on the server; %q quotes the password
+            f"pw=$(cat {password_file}) && "
+            f"s=$(printf {shlex.quote(container)} \"$pw\" | base64 | tr -d '\\n') && "
+            f'{fm_shell} {shlex.quote(before)}"$s"{shlex.quote(after)}'
         )
-        step = Step(f"Restore {backup.stamp}", ["bash", "-c", script])
+        shown = f"{fm_shell} {shlex.quote(container.replace('%q', '<root password read on the server>'))}"
+        step = Step(f"Restore {backup.stamp}", ["bash", "-c", script], shown=shown)
         return self._job(f"Restore {backup.stamp} · {bench.name}", bench.name, [step, migrate])
 
     def run_tests(self, bench: str, app: str, module: str = "") -> Job:
@@ -593,13 +631,22 @@ class Operations:
         )
 
     # -- apps on plain fm benches -------------------------------------------------------
-    def _clone_url(self, app: AppRef) -> str:
-        url = app.clone_url
-        token = self.settings.github_token
-        # Never ship this machine's token to a server; servers use their own git credentials.
-        if token and self.host.is_local and url.startswith("https://github.com/"):
-            url = url.replace("https://", f"https://x-access-token:{token}@", 1)
-        return url
+    def _get_app(self, app: AppRef) -> str:
+        """``bench get-app`` for one app, run inside the bench container."""
+        branch = f"--branch {shlex.quote(app.ref)} " if app.ref else ""
+        token = self.clone_token
+        if token and app.clone_url.startswith("https://github.com/"):
+            url = app.clone_url.replace("https://", f"https://x-access-token:{token}@", 1)
+            return f"bench get-app {branch}{shlex.quote(url)} && {_SCRUB_TOKENS}"
+        if app.is_ssh:
+            return f"{_CONTAINER_GIT_SSH}bench get-app {branch}{shlex.quote(app.repo)}"
+        # Public repos clone over HTTPS; private ones with the bench's SSH keys or agent.
+        return (
+            f"{_CONTAINER_GIT_SSH}url={shlex.quote(app.clone_url)}; "
+            'git ls-remote --heads "$url" >/dev/null 2>&1 || '
+            f"url={shlex.quote(app.ssh_url)}; "
+            f'bench get-app {branch}"$url"'
+        )
 
     def add_apps(self, bench: Bench, apps: list[AppRef]) -> Job:
         if bench.kind is BenchKind.DEPLOYER:
@@ -607,11 +654,7 @@ class Operations:
         site = shlex.quote(bench.name)
         steps = [self._bench_sh(bench.name, "ls apps > /tmp/.if-apps-before", "Note current apps")]
         for app in apps:
-            branch = f"--branch {shlex.quote(app.ref)} " if app.ref else ""
-            script = f"bench get-app {branch}{shlex.quote(self._clone_url(app))}"
-            if self.settings.github_token and self.host.is_local:
-                script += f" && {_SCRUB_TOKENS}"
-            steps.append(self._bench_sh(bench.name, script, f"Get {app.display()}"))
+            steps.append(self._bench_sh(bench.name, self._get_app(app), f"Get {app.display()}"))
         # Install whatever get-app added (an app's folder name can differ from its repo name).
         install = (
             "new=$(ls apps | grep -vxF -f /tmp/.if-apps-before | tr '\\n' ' '); "

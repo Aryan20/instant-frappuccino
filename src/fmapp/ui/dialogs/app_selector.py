@@ -316,9 +316,9 @@ class AppSelector(QWidget):
 
     def _suggest_branch(self, row: _Row) -> None:
         """Default to the matching Frappe branch when the repo has one, else repo default."""
-        org_repo = AppRef(row.repo).org_repo if row.repo else None
-        if not org_repo:
+        if not row.repo:
             return
+        app = AppRef(row.repo)
         wanted = self.frappe_ref()
 
         def apply(branches: list[str]) -> None:
@@ -335,5 +335,6 @@ class AppSelector(QWidget):
         if cached is not None:
             apply(cached)
             return
-        token = self.ctx.settings.github_token
-        run_async(lambda: marketplace.list_branches(org_repo, token), apply)
+        s = self.ctx.settings
+        token, ssh = s.github_token, s.git_over_ssh
+        run_async(lambda: marketplace.branches_for(app, token, ssh), apply)

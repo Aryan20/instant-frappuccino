@@ -37,6 +37,15 @@ _PLAIN_OUTPUT = {
 }
 
 
+# git over SSH must never wait on a passphrase or host-key prompt that nobody can answer.
+GIT_SSH_BATCH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new"
+
+
+def git_env() -> dict[str, str]:
+    """For git run by us, fm or fmd; a GIT_SSH_COMMAND the user set (e.g. ``-i key``) wins."""
+    return {"GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": os.environ.get("GIT_SSH_COMMAND") or GIT_SSH_BATCH}
+
+
 def tool_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]

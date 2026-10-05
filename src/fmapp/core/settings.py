@@ -15,6 +15,7 @@ FRAPPE_BRANCHES = ("version-15", "version-16", "develop")
 @dataclass
 class Settings:
     github_token: str = ""
+    git_over_ssh: bool = False  # clone with SSH keys instead of the token (public repos: HTTPS)
     fm_home: str = ""  # empty = fm default (~/frappe)
     fm_path: str = ""  # empty = look up on PATH
     fmd_path: str = ""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import re
 from pathlib import Path
 
 import pytest
@@ -69,3 +71,10 @@ def make_bench(root: Path, name: str, deployer: bool = False, **config: object) 
     make_app(bench_root, "frappe", version="15.40.0")
     make_app(bench_root, "erpnext")
     return bench
+
+
+def bench_script(step) -> str:
+    """The script a container step really runs (fm shell gets it base64-encoded)."""
+    match = re.search(r"echo ([A-Za-z0-9+/=]+) \| base64 -d", step.argv[-1])
+    assert match, step.argv[-1]
+    return base64.b64decode(match[1]).decode()

@@ -164,10 +164,10 @@ class JobRun(QObject):
             self._emit("Nothing to do, skipped.\n")
             self._next_step()
             return
-        self._spawn(step.argv, step.stdin)
+        self._spawn(step.argv, step.stdin, step.display())
 
-    def _spawn(self, argv: list[str], stdin: str | None = None) -> None:
-        self._emit("$ " + display_argv(argv) + "\n")
+    def _spawn(self, argv: list[str], stdin: str | None = None, shown: str = "") -> None:
+        self._emit("$ " + (shown or display_argv(argv)) + "\n")
         process = QProcess(self)
         process.setProcessEnvironment(_process_env(self.job))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)

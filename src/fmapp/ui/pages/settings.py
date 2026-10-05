@@ -123,22 +123,22 @@ class SettingsPage(QWidget):
         self._render_servers()
 
         s = ctx.settings
-        github = Card(title="GitHub")
-        github.body.addWidget(
-            label(
-                "A personal access token lets fm/fmd clone private app repos and raises the GitHub API "
-                "limit used for branch lookups. It's stored in your user config dir (mode 600) and "
-                "passed to tools via GITHUB_TOKEN — never on the command line.",
-                "muted",
-                wrap=True,
-            )
-        )
+        github = Card(title="GitHub & private apps")
         form = form_layout()
+        self.git_auth = QComboBox()
+        self.git_auth.addItem("GitHub token", False)
+        self.git_auth.addItem("SSH keys", True)
+        self.git_auth.setCurrentIndex(1 if s.git_over_ssh else 0)
+        self.git_auth.currentIndexChanged.connect(self._render_git_auth)
+        form.addRow("Clone private repos with", self.git_auth)
+        self.git_auth_help = label("", "muted", wrap=True)
+        form.addRow("", self.git_auth_help)
         self.token = QLineEdit(s.github_token)
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
         self.token.setPlaceholderText("ghp_… or github_pat_…")
         form.addRow("Token", self.token)
         github.body.addLayout(form)
+        self._render_git_auth()
         box.addWidget(github)
 
         startup = Card(title="Engine & startup")
@@ -240,6 +240,24 @@ class SettingsPage(QWidget):
         ctx.tools.changed.connect(self._render_tools)
         self._render_tools()
 
+    def _render_git_auth(self) -> None:
+        if self.git_auth.currentData():
+            text = (
+                "Public repos clone over HTTPS and private ones with SSH; no token is used. "
+                "New sites clone on this computer with your ~/.ssh keys or ssh-agent. Adding apps to "
+                "an existing site clones inside its container, using the bench's ~/.ssh "
+                "(&lt;bench&gt;/workspace/.ssh) or an agent on /fm-sockets/ssh-agent.sock. "
+                "Repos can also be entered as git@host:org/repo.git. "
+                "An optional token still speeds up branch lookups."
+            )
+        else:
+            text = (
+                "A personal access token lets fm and fmd clone private GitHub repos, and raises the "
+                "GitHub API limit for branch lookups. It's stored in your user config dir (mode 600) "
+                "and reaches the tools as GITHUB_TOKEN, never on the command line or on servers."
+            )
+        self.git_auth_help.setText(text)
+
     # -- servers --------------------------------------------------------------------------
     def show_servers(self) -> None:
         self._scroll.ensureWidgetVisible(self.servers_card)
@@ -340,6 +358,7 @@ class SettingsPage(QWidget):
     def _save(self) -> None:
         s = self.ctx.settings
         s.github_token = self.token.text().strip()
+        s.git_over_ssh = bool(self.git_auth.currentData())
         s.default_frappe_branch = self.branch.currentText().strip() or "version-15"
         s.default_admin_password = self.admin.text() or "admin"
         s.refresh_seconds = self.refresh.value()

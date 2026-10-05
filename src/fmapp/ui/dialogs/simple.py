@@ -97,12 +97,9 @@ class CatalogAppDialog(QDialog):
 
     def _fetch(self) -> None:
         try:
-            org_repo = AppRef.parse(self.repo.text()).org_repo
+            app = AppRef.parse(self.repo.text())
         except ValueError as exc:
             self.error.setText(str(exc))
-            return
-        if not org_repo:
-            self.error.setText("Branch lookup works for GitHub repositories only.")
             return
         current = self.ref.currentText()
 
@@ -110,10 +107,15 @@ class CatalogAppDialog(QDialog):
             self.ref.clear()
             self.ref.addItems(branches)
             self.ref.setCurrentText(current)
-            self.error.setText("" if branches else "No branches found (private repo without token?)")
+            self.error.setText(
+                ""
+                if branches
+                else "No branches found. Private repo? Add a token or use SSH keys in Settings."
+            )
 
-        token = self.ctx.settings.github_token
-        run_async(lambda: marketplace.list_branches(org_repo, token), fill)
+        s = self.ctx.settings
+        token, ssh = s.github_token, s.git_over_ssh
+        run_async(lambda: marketplace.branches_for(app, token, ssh), fill)
 
     def _save(self) -> None:
         repo = self.repo.text().strip()

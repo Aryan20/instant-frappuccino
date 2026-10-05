@@ -1,11 +1,12 @@
+import os
 import shlex
 import subprocess
 
 import pytest
 
-from fmapp.core import benches, deployer, paths, remote
+from fmapp.core import benches, deployer, operations, paths, remote
 from fmapp.core.hosts import LOCAL, Host
-from fmapp.core.models import AppRef
+from fmapp.core.models import AppRef, Backup
 from fmapp.core.operations import NotOnServer, Operations
 from fmapp.core.settings import Settings
 from tests.conftest import make_bench
@@ -76,25 +77,51 @@ def test_deploy_uploads_config_without_local_token(ops):
     assert deployer.load("a.example.com") is None  # this machine's configs stay separate
 
 
-def test_server_restore_reads_password_on_server(ops, tmp_path):
+def _fake_tools(folder):
+    """``fm`` that treats -c exactly like fm does (``bash -c "<cmd>"`` + shlex.split), and a
+    ``bench`` that prints its arguments one per line."""
+    folder.mkdir()
+    fm = folder / "fm"
+    fm.write_text(
+        "#!/usr/bin/env python3\nimport os, shlex, sys\n"
+        "argv = shlex.split(f'/bin/bash -c \"{sys.argv[-1]}\"')\nos.execvp(argv[0], argv)\n"
+    )
+    bench = folder / "bench"
+    bench.write_text('#!/bin/sh\nfor a in "$@"; do printf \'%s\\n\' "$a"; done\n')
+    for exe in (fm, bench):
+        exe.chmod(0o755)
+    return {**os.environ, "PATH": f"{folder}:{os.environ['PATH']}"}
+
+
+def test_server_restore_survives_fm_quoting(ops, tmp_path, monkeypatch):
+    monkeypatch.setattr(operations, "BENCH_DIR", str(tmp_path))
     make_bench(paths.benches_dir(), "a.localhost")
     [bench] = benches.discover(compose=[])
-    from fmapp.core.models import Backup
-
     backup = Backup("20260101_100000", "20260101_100000-a-database.sql.gz", None, None, 1)
-    restore = _script(ops.restore(bench, backup).steps[0].argv)
-    assert 'cat "$HOME"/frappe/services/secrets/db_root_password.txt' in restore
-    # The quoting survives a password full of shell metacharacters.
+    step = ops.restore(bench, backup).steps[0]
+    assert "<root password read on the server>" in step.display()
+    script = shlex.split(_script(step.argv))[-1]  # what bash -c runs on the server
+    assert 'cat "$HOME"/frappe/services/secrets/db_root_password.txt' in script
+    password = "p'a\"s$s `x` \\ 100%"
     secret = tmp_path / "pw"
-    secret.write_text("p'a\"s$s `x`")
-    inner = shlex.split(restore)[-1]  # bash -c <script>
-    probe = (
-        inner.replace('"$HOME"/frappe/services/secrets/db_root_password.txt', shlex.quote(str(secret))).split(
-            " && "
-        )[0]
-        + ' && printf "%s" "$pw"'
-    )
-    quoted = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=True).stdout
-    assert subprocess.run(["bash", "-c", f"printf %s {quoted}"], capture_output=True, text=True).stdout == (
-        "p'a\"s$s `x`"
-    )
+    secret.write_text(password)
+    script = script.replace('"$HOME"/frappe/services/secrets/db_root_password.txt', shlex.quote(str(secret)))
+    env = _fake_tools(tmp_path / "bin")
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=True).stdout
+    args = out.splitlines()
+    assert args[:4] == [
+        "--site",
+        "a.localhost",
+        "restore",
+        "sites/a.localhost/private/backups/" + backup.database,
+    ]
+    assert args[-2:] == ["--db-root-password", password]
+
+
+def test_container_scripts_survive_fm_quoting(tmp_path, monkeypatch):
+    monkeypatch.setattr(operations, "BENCH_DIR", str(tmp_path))
+    env = _fake_tools(tmp_path / "bin")
+    local = Operations(Settings(fm_path=str(tmp_path / "bin" / "fm")))
+    step = local._bench_sh("a.localhost", 'bench --site "a.localhost" echo "two words" \'$HOME\'', "x")
+    out = subprocess.run(step.argv, capture_output=True, text=True, env=env, check=True).stdout
+    assert out.splitlines() == ["--site", "a.localhost", "echo", "two words", "$HOME"]

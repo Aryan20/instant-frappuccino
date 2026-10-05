@@ -11,7 +11,13 @@ from typing import Any
 
 from fmapp.core.textutil import slug_to_app_name
 
-_GITHUB = re.compile(r"^(?:https?://|git@)github\.com[/:](?P<org>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$")
+_GITHUB = re.compile(
+    r"^(?:https?://|ssh://git@|git@)github\.com[/:](?P<org>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$"
+)
+# host + path of any git URL: https://host/path, git@host:path, ssh://git@host/path
+_GIT_URL = re.compile(
+    r"^(?:https?://(?:[^@/]+@)?|ssh://git@|git@)(?P<host>[^/:]+)[/:](?P<path>.+?)(?:\.git)?/?$"
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,10 @@ class AppRef:
         return "://" in self.repo or self.repo.startswith("git@")
 
     @property
+    def is_ssh(self) -> bool:
+        return self.repo.startswith(("git@", "ssh://"))
+
+    @property
     def org_repo(self) -> str | None:
         """``org/repo`` for GitHub sources, else ``None``."""
         if "/" not in self.repo:
@@ -65,6 +75,16 @@ class AppRef:
         return f"https://github.com/{self.org_repo}"
 
     @property
+    def ssh_url(self) -> str:
+        """The same repo over SSH (``git@host:path.git``), cloned with the user's SSH keys."""
+        if self.repo.startswith("git@"):
+            return self.repo
+        if not self.is_url:
+            return f"git@github.com:{self.org_repo}.git"
+        match = _GIT_URL.match(self.repo)
+        return f"git@{match['host']}:{match['path']}.git" if match else self.repo
+
+    @property
     def name_guess(self) -> str:
         if self.subdir:
             return slug_to_app_name(self.subdir)
@@ -73,15 +93,22 @@ class AppRef:
     def to_fm_arg(self) -> str:
         """``fm create --apps`` syntax: ``repo[:ref][#subdir]``."""
         arg = self.repo if self.is_url else (self.org_repo or self.repo)
+        if self.repo.startswith("ssh://"):
+            arg = self.ssh_url  # fm only understands the git@host:path form
         if self.ref:
             arg += f":{self.ref}"
         if self.subdir:
             arg += f"#{self.subdir}"
+        elif self.ref and arg.startswith("git@"):
+            arg += "#"  # fm's option check rejects git@host:path:ref unless a #subdir follows
         return arg
 
     def to_fmd_table(self) -> dict[str, Any]:
         """One ``[[apps]]`` entry of an fmd config."""
         table: dict[str, Any] = {"repo": self.org_repo or self.repo}
+        if not self.org_repo:  # fmd reads ``repo`` as a GitHub org/repo; others need the URL
+            match = _GIT_URL.match(self.repo)
+            table = {"repo": match["path"] if match else self.repo, "repo_url": self.repo, "exists": True}
         if self.ref:
             table["ref"] = self.ref
         if self.subdir:
@@ -91,8 +118,9 @@ class AppRef:
 
     @classmethod
     def from_fmd_table(cls, table: dict[str, Any]) -> AppRef:
+        url = str(table.get("repo_url") or "")
         return cls(
-            repo=str(table.get("repo", "")),
+            repo=url if _GIT_URL.match(url) else str(table.get("repo", "")),
             ref=str(table.get("ref", "")),
             subdir=str(table.get("subdir_path", "")),
         )

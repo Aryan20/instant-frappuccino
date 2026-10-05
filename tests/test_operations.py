@@ -7,7 +7,7 @@ from fmapp.core import benches, deployer, paths
 from fmapp.core.models import AppRef, BenchKind, SiteSpec
 from fmapp.core.operations import Operations, display_argv, strip_credentials
 from fmapp.core.settings import Settings
-from tests.conftest import make_bench
+from tests.conftest import bench_script, make_bench
 
 
 @pytest.fixture
@@ -35,7 +35,8 @@ def test_create_fm_site(ops):
     assert argv.count("--apps") == 3
     assert argv[argv.index("--apps") + 1] == "frappe/frappe:version-15"
     assert "frappe/hrms:version-15" in argv
-    assert job.env == {"GITHUB_TOKEN": "ghp_secret_token"}
+    assert job.env["GITHUB_TOKEN"] == "ghp_secret_token"
+    assert "BatchMode=yes" in job.env["GIT_SSH_COMMAND"]  # git over SSH never waits on a prompt
     assert "s3cret!" not in job.preview()
     assert "ghp_secret_token" not in " ".join(argv)
 
@@ -61,14 +62,14 @@ def test_add_apps_fm_bench_installs_only_new(ops):
     [bench] = benches.discover(compose=[])
     job = ops.add_apps(bench, [AppRef("frappe/hrms", "version-15")])
     note, get_app, install = job.steps
-    assert note.argv[-1].endswith("ls apps > /tmp/.if-apps-before")
-    script = get_app.argv[-1]
+    assert bench_script(note).endswith("ls apps > /tmp/.if-apps-before")
+    script = bench_script(get_app)
     assert "bench get-app --branch version-15" in script
     assert "x-access-token:ghp_secret_token@github.com/frappe/hrms" in script
     assert "remote set-url upstream" in script  # token scrubbed after clone
     # whatever get-app added is installed (folder names can differ from repo names)
-    assert "grep -vxF -f /tmp/.if-apps-before" in install.argv[-1]
-    assert "bench --site dev.localhost install-app $new" in install.argv[-1]
+    assert "grep -vxF -f /tmp/.if-apps-before" in bench_script(install)
+    assert "bench --site dev.localhost install-app $new" in bench_script(install)
     assert bench_dir.exists()
 
 
@@ -172,11 +173,11 @@ def test_import_into_existing_site_renames_to_bench(ops):
 
 def test_build_whole_bench_and_selected_apps(ops):
     whole = ops.build("a.localhost").steps
-    assert len(whole) == 1 and whole[0].argv[-1].endswith("&& bench build")
+    assert len(whole) == 1 and bench_script(whole[0]).endswith("|| exit 1; bench build")
     job = ops.build("a.localhost", ["erpnext", "hrms"], production=True, force=True, clear_cache=True)
     build, clear = job.steps
-    assert build.argv[-1].endswith("bench build --apps erpnext,hrms --production --force")
-    assert clear.argv[-1].endswith("bench --site a.localhost clear-cache")
+    assert bench_script(build).endswith("bench build --apps erpnext,hrms --production --force")
+    assert bench_script(clear).endswith("bench --site a.localhost clear-cache")
     assert job.title == "Build erpnext, hrms · a.localhost"
     with pytest.raises(ValueError):
         ops.build("a.localhost", ["erpnext; rm -rf /"])
@@ -184,7 +185,7 @@ def test_build_whole_bench_and_selected_apps(ops):
 
 def test_everyday_site_tools(ops):
     def script(job, index=0):
-        return job.steps[index].argv[-1].split(" && ", 1)[1]
+        return bench_script(job.steps[index]).split("|| exit 1; ", 1)[1]
 
     assert script(ops.clear_cache("a.localhost", "site")) == "bench --site a.localhost clear-cache"
     both = script(ops.clear_cache("a.localhost"))
@@ -223,8 +224,8 @@ def test_pull_apps_then_migrate_and_build(ops):
     job = ops.pull_apps("a.localhost", ["erpnext", "hrms"])
     titles = [s.title for s in job.steps]
     assert titles == ["Pull erpnext", "Pull hrms", "bench migrate", "Build pulled apps"]
-    assert "git -C apps/erpnext pull --ff-only ||" in job.steps[0].argv[-1]
-    assert job.steps[-1].argv[-1].endswith("bench build --apps erpnext,hrms")
+    assert "git -C apps/erpnext pull --ff-only ||" in bench_script(job.steps[0])
+    assert bench_script(job.steps[-1]).endswith("bench build --apps erpnext,hrms")
     assert len(ops.pull_apps("a.localhost", ["erpnext"], migrate=False, build=False).steps) == 1
 
 
@@ -250,7 +251,7 @@ def test_backups_listing_and_restore(ops):
     secrets.mkdir(parents=True)
     (secrets / "db_root_password.txt").write_text("r00t\n")
     job = ops.restore(bench, older)
-    restore = job.steps[0].argv[-1]
+    restore = bench_script(job.steps[0])
     assert "restore sites/a.localhost/private/backups/20260101_100000-a_localhost-database.sql.gz" in restore
     assert (
         "--with-public-files sites/a.localhost/private/backups/20260101_100000-a_localhost-files.tar"

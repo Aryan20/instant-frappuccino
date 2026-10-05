@@ -21,7 +21,7 @@ with no web view. It uses one consistent, Frappe-UI-like design in light and dar
 | **Sites** | Every bench under `~/frappe/sites` with live Docker status, type (FM / Deployer), env, Frappe version, app count. Start, stop, restart, open site/desk, delete (type-to-confirm, optional DB drop). |
 | **New Site wizard** | Name → *Frappe Manager* (dev bench) or *Frappe Deployer* (immutable releases) → Frappe version → apps → review the exact commands → create. |
 | **Import fmd config** | Already have a Frappe Deployer `site.toml`? Choose it in the New Site wizard (or on the Sites page, or drop it onto the wizard) for instant setup: name, Frappe version, apps, runtimes and release options are filled in and you go straight to Review, which shows the exact config that will be written. Everything the wizard doesn't edit is kept verbatim: per-app hooks, `[ship]`, `[remote_worker]`, `[fc]`, `[switch.site_config]` and unknown keys. Credentials in the file are masked in all previews and logs, and the stored copy is mode 600. Existing Deployer sites can redeploy from a file via **Releases → Import fmd config…**. |
-| **Apps** | Install from the **Marketplace** (360+ apps), **My Apps**, or **any git URL** (GitHub/GitLab, public or private, monorepo subdirs). Branches are looked up from GitHub and matched to your Frappe version automatically. |
+| **Apps** | Install from the **Marketplace** (360+ apps), **My Apps**, or **any git URL** (GitHub/GitLab, HTTPS or `git@host:org/repo.git`, public or private, monorepo subdirs). Private repos clone with a GitHub token or with your **SSH keys**, chosen in Settings. Branches are looked up from GitHub and matched to your Frappe version automatically. |
 | **Site detail** | Config overview. **Site info & credentials** loads `fm info` on demand: Administrator, DB and root-DB passwords, plus Mailpit/Adminer URLs and basic-auth login, each with Show and Copy. Toggles for developer mode, admin tools and environment. Targeted restarts (web, workers, redis, nginx, all containers), migrate, backup and **build**: `bench build` for the whole bench or just the apps you pick, with production/force/clear-cache options and the exact command shown. You can also multi-select apps on the Apps tab and click *Build selected*. Installed apps with branch, commit and source, add/remove apps, a Containers tab, and live `fm logs -f` per service. |
 | **Everyday tools** | **Log in as Admin**: one click opens the desk as Administrator via a one-time session from `bench browse`, no password typing; the session URL never touches the logs. **Clear cache**: site, website or both. **Terminal** and **Console** open your own terminal app on `fm shell` / `--bench-console`. **VS Code** runs `fm code`. **Run command…** runs any bench or shell command in the container, with templates and remembered history. **Maintenance mode** and **Pause scheduler** toggles show the live state from `site_config.json`. **Administrator password…** sets a new one. All of these are also in the site's More menu and the Sites right-click menu; Log in as Admin and Clear cache are in the tray as well. |
 | **Backups** | Lists the site's backups (database plus public/private files) with size and time. **Back up now**, **Show in folder**, and **Restore…** (type the site name to confirm; files optional; migrate runs afterwards). The MariaDB root password comes from fm's secrets folder and is masked in logs. |
@@ -133,6 +133,15 @@ the server's own PATH. State is read by sending `core/probe.py` to the server's 
 A Deployer site's config is kept locally per server and uploaded over stdin to
 `~/.instant-frappuccino/deployer/<site>.toml` before `fmd deploy pull`. A restore reads the
 MariaDB root password on the server, so the password never crosses SSH.
+
+**Private repos over SSH.** With *Settings → GitHub & private apps → SSH keys*, no token is
+used for cloning. Public repos clone over HTTPS, and private ones fall back to SSH. fm and fmd
+clone new sites on this computer with your `~/.ssh` keys or ssh-agent, and fmd gets no
+`github_token`, so it tries SSH first. Adding apps to an existing site runs `bench get-app`
+inside the bench container. That uses the bench's own `~/.ssh` (`<bench>/workspace/.ssh`) or an
+agent socket at `/fm-sockets/ssh-agent.sock` when one is running. Git never waits on a prompt:
+SSH runs with `BatchMode`, unless you set your own `GIT_SSH_COMMAND`. Branch lookups for private
+repos use `git ls-remote` over SSH. Servers never get your token, so they always work this way.
 
 **Secrets.** The GitHub token lives in `settings.json` (mode 600) and reaches fm and fmd only
 through the `GITHUB_TOKEN` env var. fmd configs reference it as `${GITHUB_TOKEN}`. When
