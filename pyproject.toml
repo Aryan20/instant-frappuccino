@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Desktop GUI for creating and managing Frappe Manager and Frappe Deployer sites locally."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Aryan Kaushik" }]
 dependencies = [
     # Essentials = QtCore/Gui/Widgets/Svg/Network without WebEngine & friends (~70MB lighter).

@@ -187,3 +187,13 @@ must be accepted once; the Sites page's **Connect in Terminal** button opens tha
 - SSL / alias-domain management (`fm ssl`), ngrok tunnels
 - Desktop notifications when long jobs finish
 - AppImage / Flatpak for Linux; signed + notarized macOS build
+
+## License
+
+Copyright (C) 2026 Aryan Kaushik
+
+Instant Frappuccino is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed in the hope
+that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
